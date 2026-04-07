@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
-import { LogIn, UtensilsCrossed, Eye, EyeOff, AlertCircle, ChefHat, Users, Utensils } from 'lucide-react';
+import { LogIn, UtensilsCrossed, Eye, EyeOff, AlertCircle, ChefHat, Users, Utensils, Receipt } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 export default function Login() {
@@ -184,6 +184,7 @@ export default function Login() {
                 { label: 'Admin',   icon: <Utensils size={14} />, user: 'admin',            pass: 'admin',       r: '249,115,22' },
                 { label: 'Waiter',  icon: <Users size={14} />,    user: 'waiter@testy.com',  pass: 'password123', r: '6,182,212'  },
                 { label: 'Kitchen', icon: <ChefHat size={14} />,  user: 'kitchen@testy.com', pass: 'password123', r: '139,92,246' },
+                { label: 'Biller',  icon: <Receipt size={14} />,   user: 'biller@testy.com', pass: 'password123', r: '16,185,129' },
               ].map((item, i) => (
                 <motion.button
                   key={item.label}

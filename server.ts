@@ -19,12 +19,14 @@ db.exec(`
     name TEXT NOT NULL,
     email TEXT UNIQUE NOT NULL,
     password TEXT NOT NULL,
-    role TEXT CHECK(role IN ('admin', 'waiter', 'kitchen')) NOT NULL
+    role TEXT CHECK(role IN ('admin', 'waiter', 'kitchen', 'biller')) NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS tables (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    table_number TEXT UNIQUE NOT NULL
+    table_number TEXT UNIQUE NOT NULL,
+    bill_requested INTEGER DEFAULT 0,
+    waiter_id INTEGER DEFAULT NULL
   );
 
   CREATE TABLE IF NOT EXISTS menu (
@@ -63,10 +65,52 @@ if (!menuColumns.includes('stock')) db.prepare('ALTER TABLE menu ADD COLUMN stoc
 if (!menuColumns.includes('out_of_stock')) db.prepare('ALTER TABLE menu ADD COLUMN out_of_stock INTEGER DEFAULT 0').run();
 if (!menuColumns.includes('is_veg')) db.prepare('ALTER TABLE menu ADD COLUMN is_veg INTEGER DEFAULT 1').run();
 if (!menuColumns.includes('half_price')) db.prepare('ALTER TABLE menu ADD COLUMN half_price REAL DEFAULT 0').run();
+if (!menuColumns.includes('item_type')) {
+  db.prepare('ALTER TABLE menu ADD COLUMN item_type TEXT DEFAULT "veg"').run();
+  db.prepare('UPDATE menu SET item_type = "nonveg" WHERE is_veg = 0').run();
+}
+if (!menuColumns.includes('sub_category')) db.prepare("ALTER TABLE menu ADD COLUMN sub_category TEXT DEFAULT ''").run();
+
+try {
+  const checkRoles = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='users' AND sql LIKE '%biller%'`).get();
+  if (!checkRoles) {
+    db.exec(`
+      PRAGMA foreign_keys=off;
+      BEGIN TRANSACTION;
+      CREATE TABLE IF NOT EXISTS users_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          email TEXT UNIQUE NOT NULL,
+          password TEXT NOT NULL,
+          role TEXT CHECK(role IN ('admin', 'waiter', 'kitchen', 'biller')) NOT NULL,
+          login_count INTEGER DEFAULT 0,
+          active INTEGER DEFAULT 0,
+          left_company INTEGER DEFAULT 0,
+          last_login DATETIME
+      );
+      INSERT INTO users_new (id, name, email, password, role, login_count, active, left_company, last_login) 
+        SELECT id, name, email, password, role, login_count, active, left_company, last_login FROM users;
+      DROP TABLE users;
+      ALTER TABLE users_new RENAME TO users;
+      COMMIT;
+      PRAGMA foreign_keys=on;
+    `);
+  }
+} catch(e) {
+  console.log("Migration error for users table role constraint:", e);
+}
 
 // Add portion to order_items if not present
 const orderItemColumns = db.prepare('PRAGMA table_info(order_items)').all().map((col: any) => col.name);
 if (!orderItemColumns.includes('portion')) db.prepare("ALTER TABLE order_items ADD COLUMN portion TEXT DEFAULT 'full'").run();
+
+// Add is_paid to orders
+const orderColumns = db.prepare('PRAGMA table_info(orders)').all().map((col: any) => col.name);
+if (!orderColumns.includes('is_paid')) db.prepare('ALTER TABLE orders ADD COLUMN is_paid INTEGER DEFAULT 0').run();
+
+const tableColumns = db.prepare('PRAGMA table_info(tables)').all().map((col: any) => col.name);
+if (!tableColumns.includes('bill_requested')) db.prepare('ALTER TABLE tables ADD COLUMN bill_requested INTEGER DEFAULT 0').run();
+if (!tableColumns.includes('waiter_id')) db.prepare('ALTER TABLE tables ADD COLUMN waiter_id INTEGER DEFAULT NULL').run();
 
 const userColumns = db.prepare('PRAGMA table_info(users)').all().map((col: any) => col.name);
 if (!userColumns.includes('login_count')) db.prepare('ALTER TABLE users ADD COLUMN login_count INTEGER DEFAULT 0').run();
@@ -92,6 +136,7 @@ const defaultUsers = [
   { name: 'Admin User', email: 'admin', role: 'admin', password: adminPassword },
   { name: 'Waiter User', email: 'waiter@testy.com', role: 'waiter', password: defaultPassword },
   { name: 'Kitchen User', email: 'kitchen@testy.com', role: 'kitchen', password: defaultPassword },
+  { name: 'Biller User', email: 'biller@testy.com', role: 'biller', password: defaultPassword },
 ];
 
 if (userCount.count === 0) {
@@ -105,25 +150,26 @@ if (userCount.count === 0) {
     db.prepare('INSERT INTO tables (table_number) VALUES (?)').run(`Table ${i}`);
   }
 
-  // Seed menu: [name, price, category, description, prep_time, stock, is_veg (1=veg, 0=non-veg)]
+  // Seed menu: [name, category, description, price, half_price, prep_time, stock, is_veg, item_type]
   const menuItems = [
-    ['Classic Burger',   12.99, 'Main',    'Beef patty with lettuce, tomato, and special sauce', 15, 20, 0],
-    ['Margherita Pizza', 15.50, 'Main',    'Tomato, mozzarella, and fresh basil',                 20, 15, 1],
-    ['Pesto Pasta',      11.00, 'Main',    'Pasta tossed in creamy basil pesto',                  18, 12, 1],
-    ['Caesar Salad',      8.50, 'Starter', 'Crisp romaine, parmesan, and croutons',               10,  8, 1],
-    ['Coke',              2.50, 'Drink',   'Chilled classic cola',                                  0, 50, 1],
-    ['Craft Beer',        5.00, 'Drink',   'Locally brewed ale',                                    0, 30, 1],
-    ['Garlic Bread',      4.00, 'Starter', 'Toasted with herb butter',                              8, 25, 1],
-    ['Tiramisu',          6.50, 'Dessert', 'Classic Italian coffee dessert',                        5, 10, 1],
-    ['Chicken Wings',     9.99, 'Starter', 'Crispy fried wings with hot sauce',                   12, 18, 0],
-    ['Grilled Salmon',   18.99, 'Main',    'Atlantic salmon with herb butter and lemon',           20, 10, 0],
-    ['Paneer Tikka',     11.50, 'Starter', 'Grilled cottage cheese with spices',                  15, 15, 1],
-    ['Dal Makhani',      10.00, 'Main',    'Slow-cooked creamy black lentils',                    25, 12, 1],
+    ['Classic Burger', 'Main', 'Beef patty with lettuce, tomato, and special sauce', 249, 0, 15, 20, 0, 'nonveg'],
+    ['Margherita Pizza', 'Main', 'Tomato, mozzarella, and fresh basil', 299, 0, 20, 15, 1, 'veg'],
+    ['Pesto Pasta', 'Main', 'Pasta tossed in creamy basil pesto', 269, 0, 18, 12, 1, 'veg'],
+    ['Caesar Salad', 'Starter', 'Crisp romaine, parmesan, and croutons', 149, 0, 10, 8, 1, 'veg'],
+    ['Coke', 'Drink', 'Chilled classic cola', 60, 0, 0, 50, 1, 'veg'],
+    ['Craft Beer', 'Drink', 'Locally brewed ale', 180, 0, 0, 30, 1, 'nonveg'],
+    ['Garlic Bread', 'Starter', 'Toasted with herb butter', 129, 0, 8, 25, 1, 'veg'],
+    ['Tiramisu', 'Dessert', 'Classic Italian coffee dessert', 179, 0, 5, 10, 1, 'veg'],
+    ['Chicken Wings', 'Starter', 'Crispy fried wings with hot sauce', 229, 0, 12, 18, 0, 'nonveg'],
+    ['Grilled Salmon', 'Main', 'Atlantic salmon with herb butter and lemon', 349, 0, 20, 10, 0, 'nonveg'],
+    ['Paneer Tikka', 'Starter', 'Grilled cottage cheese with spices', 199, 0, 15, 15, 1, 'veg'],
+    ['Dal Makhani', 'Main', 'Slow-cooked creamy black lentils', 219, 0, 25, 12, 1, 'veg'],
   ];
-  menuItems.forEach(([name, price, cat, desc, prep, stock, is_veg]) => {
+  // Array format: [name, category, description, price, half_price, prep_time, stock, is_veg, item_type]
+  menuItems.forEach(([name, category, description, price, half_price, preparation_time, stock, is_veg, item_type]) => {
     const stockValue = Number(stock);
-    db.prepare('INSERT INTO menu (name, price, category, description, preparation_time, stock, out_of_stock, is_veg) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(name, price, cat, desc, prep, stockValue, 0, is_veg); // all seeded items start as available
+    db.prepare('INSERT INTO menu (name, price, category, description, preparation_time, stock, out_of_stock, is_veg, half_price, item_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(name, price, category, description, preparation_time, stockValue, 0, is_veg, half_price, item_type); // all seeded items start as available
   });
 }
 
@@ -242,12 +288,13 @@ async function startServer() {
 
   app.post('/api/menu', authenticate, (req: any, res: any) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
-    const { name, price, category, description, preparation_time, stock, is_veg, half_price } = req.body;
+    const { name, price, category, sub_category, description, preparation_time, stock, is_veg, half_price, item_type } = req.body;
     const out_of_stock = Number(stock) <= 0 ? 1 : 0;
-    const result = db.prepare('INSERT INTO menu (name, price, category, description, preparation_time, stock, out_of_stock, is_veg, half_price) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(name, price, category, description || '', Number(preparation_time) || 0, Number(stock) || 0, out_of_stock,
-           is_veg === false || is_veg === 0 ? 0 : 1,
-           Number(half_price) || 0);
+    const typeValue = item_type || (is_veg === false || is_veg === 0 ? 'nonveg' : 'veg');
+    const result = db.prepare('INSERT INTO menu (name, price, category, sub_category, description, preparation_time, stock, out_of_stock, is_veg, half_price, item_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(name, price, category, sub_category || '', description || '', Number(preparation_time) || 0, Number(stock) || 0, out_of_stock,
+        is_veg === false || is_veg === 0 ? 0 : 1,
+        Number(half_price) || 0, typeValue);
     io.emit('menu-updated');
     res.json({ id: result.lastInsertRowid });
   });
@@ -304,7 +351,7 @@ async function startServer() {
         COALESCE(COUNT(o.id), 0) as totalOrders
       FROM users u
       LEFT JOIN orders o ON o.waiter_id = u.id
-      WHERE u.role IN ('waiter', 'kitchen') AND u.left_company = 0
+      WHERE u.role IN ('waiter', 'kitchen', 'biller') AND u.left_company = 0
       GROUP BY u.id
     `).all();
     res.json(staff);
@@ -319,7 +366,8 @@ async function startServer() {
 
     staff.forEach((entry: any) => {
       const name = String(entry.name || '').trim();
-      const role = entry.role === 'kitchen' ? 'kitchen' : 'waiter';
+      const allowedRoles = ['waiter', 'kitchen', 'biller'];
+      const role = allowedRoles.includes(entry.role) ? entry.role : 'waiter';
       const rawEmail = entry.email ? String(entry.email).trim() : makeEmailFromName(name, role);
       const email = ensureUniqueEmail(rawEmail);
       const password = entry.password ? String(entry.password).trim() : generateRandomPassword(8);
@@ -342,8 +390,98 @@ async function startServer() {
 
   // Tables Routes
   app.get('/api/tables', authenticate, (req: any, res: any) => {
-    const tables = db.prepare('SELECT * FROM tables').all();
+    let query = `
+      SELECT t.*, 
+             u.name as waiter_name,
+             (SELECT COUNT(*) FROM orders WHERE table_id = t.id AND is_paid = 0) as active_orders_count
+      FROM tables t
+      LEFT JOIN users u ON t.waiter_id = u.id
+    `;
+    
+    let params: any[] = [];
+    if (req.user.role === 'waiter') {
+      query += ` WHERE t.waiter_id IS NULL OR t.waiter_id = ?`;
+      params.push(req.user.id);
+    }
+
+    const tables = db.prepare(query).all(...params);
     res.json(tables);
+  });
+
+  app.post('/api/tables', authenticate, (req: any, res: any) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Unauthorized' });
+    const { table_number } = req.body;
+    try {
+      const result = db.prepare('INSERT INTO tables (table_number) VALUES (?)').run(table_number);
+      io.emit('stats-update');
+      res.json({ id: result.lastInsertRowid });
+    } catch (err: any) {
+      if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+         res.status(400).json({ error: 'Table already exists' });
+      } else {
+         res.status(500).json({ error: err.message });
+      }
+    }
+  });
+
+  app.delete('/api/tables/:id', authenticate, (req: any, res: any) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Unauthorized' });
+    const activeCount = db.prepare("SELECT COUNT(*) as count FROM orders WHERE table_id = ? AND is_paid = 0").get(req.params.id) as any;
+    if (activeCount.count > 0) return res.status(400).json({ error: 'Cannot delete table with active orders' });
+    
+    db.prepare('DELETE FROM tables WHERE id = ?').run(req.params.id);
+    io.emit('stats-update');
+    res.json({ success: true });
+  });
+
+  app.put('/api/tables/:id/assign', authenticate, (req: any, res: any) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Unauthorized' });
+    const { waiter_id } = req.body;
+    db.prepare('UPDATE tables SET waiter_id = ? WHERE id = ?').run(waiter_id || null, req.params.id);
+    io.emit('stats-update');
+    io.emit('order-status-updated'); // trigger waiter dashboards to fetch tables
+    res.json({ success: true });
+  });
+
+  app.get('/api/tables/:id/bill', authenticate, (req: any, res: any) => {
+    // Get all unpaid orders for this table
+    const tableId = req.params.id;
+    const orders = db.prepare('SELECT * FROM orders WHERE table_id = ? AND is_paid = 0').all(tableId) as any[];
+
+    if (orders.length === 0) return res.json({ orders: [], items: [], total: 0 });
+
+    const orderIds = orders.map(o => o.id);
+    const placeholders = orderIds.map(() => '?').join(',');
+
+    const items = db.prepare(`
+      SELECT oi.menu_id, m.name as item_name, m.price, m.half_price, oi.portion, SUM(oi.quantity) as quantity
+      FROM order_items oi
+      JOIN menu m ON oi.menu_id = m.id
+      WHERE oi.order_id IN (${placeholders})
+      GROUP BY oi.menu_id, oi.portion
+    `).all(...orderIds) as any[];
+
+    const total = items.reduce((sum, item) => {
+      const price = item.portion === 'half' && item.half_price ? item.half_price : item.price;
+      return sum + (price * item.quantity);
+    }, 0);
+
+    res.json({ orders, items, total });
+  });
+
+  app.post('/api/tables/:id/pay', authenticate, (req: any, res: any) => {
+    db.prepare('UPDATE orders SET is_paid = 1 WHERE table_id = ? AND is_paid = 0').run(req.params.id);
+    db.prepare('UPDATE tables SET bill_requested = 0 WHERE id = ?').run(req.params.id);
+    io.emit('order-status-updated');
+    io.emit('stats-update');
+    res.json({ success: true });
+  });
+
+  app.put('/api/tables/:id/request-bill', authenticate, (req: any, res: any) => {
+    db.prepare('UPDATE tables SET bill_requested = 1 WHERE id = ?').run(req.params.id);
+    io.emit('stats-update'); // Refresh general stats or table data
+    io.emit('order-status-updated'); // Can reuse to trigger fetchData
+    res.json({ success: true });
   });
 
   // Orders Routes
@@ -354,14 +492,13 @@ async function startServer() {
       JOIN tables t ON o.table_id = t.id 
       JOIN users u ON o.waiter_id = u.id
     `;
-    
+
     let params: any[] = [];
     if (req.user.role === 'waiter') {
       if (req.query.history === 'true') {
-        query += ` WHERE o.status = 'served'`;
+        query += ` WHERE o.is_paid = 1`;
       } else {
-        query += ` WHERE o.waiter_id = ? AND o.status != 'served'`;
-        params.push(req.user.id);
+        query += ` WHERE o.is_paid = 0`;
       }
     } else if (req.user.role === 'kitchen') {
       if (req.query.history === 'true') {
@@ -370,9 +507,9 @@ async function startServer() {
         query += ` WHERE o.status != 'served'`;
       }
     }
-    
+
     query += ` ORDER BY o.created_at DESC`;
-    
+
     const orders = db.prepare(query).all(...params) as any[];
 
     const ordersWithItems = orders.map(order => {
@@ -389,47 +526,87 @@ async function startServer() {
   });
 
   app.post('/api/orders', authenticate, (req: any, res: any) => {
-    const { table_id, items, total_price } = req.body;
-    const insertOrder = db.prepare('INSERT INTO orders (table_id, waiter_id, total_price) VALUES (?, ?, ?)');
-    const insertItem  = db.prepare("INSERT INTO order_items (order_id, menu_id, quantity, portion) VALUES (?, ?, ?, ?)");
+    try {
+      const { table_id, items } = req.body;
+      if (!Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({ error: 'Order items are required' });
+      }
 
-    const transaction = db.transaction(() => {
-      const orderResult = insertOrder.run(table_id, req.user.id, total_price);
-      const orderId = orderResult.lastInsertRowid;
-      items.forEach((item: any) => {
-        insertItem.run(orderId, item.menu_id, item.quantity, item.portion || 'full');
+      const insertItem = db.prepare("INSERT INTO order_items (order_id, menu_id, quantity, portion) VALUES (?, ?, ?, ?)");
+      const calculateTotal = (items: any[]) => {
+        return items.reduce((sum, item) => {
+          const menuRow = db.prepare('SELECT price, half_price FROM menu WHERE id = ?').get(item.menu_id) as any;
+          const price = item.portion === 'half' && menuRow?.half_price ? Number(menuRow.half_price) : Number(menuRow?.price || 0);
+          return sum + price * Number(item.quantity || 0);
+        }, 0);
+      };
+
+      const orderTotal = calculateTotal(items);
+
+      const transaction = db.transaction(() => {
+        const existing = db.prepare("SELECT id FROM orders WHERE table_id = ? AND is_paid = 0 AND status = 'new' LIMIT 1").get(table_id) as any;
+        let orderId;
+        if (existing) {
+          orderId = existing.id;
+          db.prepare('UPDATE orders SET total_price = total_price + ? WHERE id = ?').run(orderTotal, orderId);
+        } else {
+          const orderResult = db.prepare('INSERT INTO orders (table_id, waiter_id, total_price) VALUES (?, ?, ?)').run(table_id, req.user.id, orderTotal);
+          orderId = orderResult.lastInsertRowid;
+        }
+
+        items.forEach((item: any) => {
+          insertItem.run(orderId, item.menu_id, item.quantity, item.portion || 'full');
+        });
+        return orderId;
       });
-      return orderId;
-    });
 
-    const orderId = transaction();
-    
-    // Fetch full order for socket broadcast
-    const fullOrder = db.prepare(`
-      SELECT o.*, t.table_number, u.name as waiter_name 
-      FROM orders o 
-      JOIN tables t ON o.table_id = t.id 
-      JOIN users u ON o.waiter_id = u.id
-      WHERE o.id = ?
-    `).get(orderId) as any;
-    
-    fullOrder.items = db.prepare(`
-      SELECT oi.*, m.name as item_name, m.price, m.is_veg, m.half_price 
-      FROM order_items oi 
-      JOIN menu m ON oi.menu_id = m.id 
-      WHERE oi.order_id = ?
-    `).all(orderId);
+      const orderId = transaction();
 
-    io.emit('new-order', fullOrder);
-    io.emit('stats-update');
-    res.json(fullOrder);
+      // Fetch full order for socket broadcast
+      const fullOrder = db.prepare(`
+        SELECT o.*, t.table_number, u.name as waiter_name 
+        FROM orders o 
+        JOIN tables t ON o.table_id = t.id 
+        JOIN users u ON o.waiter_id = u.id
+        WHERE o.id = ?
+      `).get(orderId) as any;
+
+      fullOrder.items = db.prepare(`
+        SELECT oi.*, m.name as item_name, m.price, m.is_veg, m.half_price 
+        FROM order_items oi 
+        JOIN menu m ON oi.menu_id = m.id 
+        WHERE oi.order_id = ?
+      `).all(orderId);
+
+      io.emit('new-order', fullOrder);
+      io.emit('stats-update');
+      res.json(fullOrder);
+    } catch (error) {
+      console.error("CREATE ORDER ERROR:", error);
+      res.status(500).json({ error: String(error) });
+    }
   });
 
   app.put('/api/orders/:id/status', authenticate, (req: any, res: any) => {
     const { status } = req.body;
     db.prepare('UPDATE orders SET status = ? WHERE id = ?').run(status, req.params.id);
-    
+
     io.emit('order-status-updated', { id: parseInt(req.params.id), status });
+    io.emit('stats-update');
+    res.json({ success: true });
+  });
+
+  app.delete('/api/orders/:id', authenticate, (req: any, res: any) => {
+    const orderId = Number(req.params.id);
+    if (isNaN(orderId)) return res.status(400).json({ error: 'Invalid order ID' });
+
+    console.log(`[DELETE] Order #${orderId} requested by User #${req.user.id}`);
+    
+    // Delete items first
+    db.prepare('DELETE FROM order_items WHERE order_id = ?').run(orderId);
+    db.prepare('DELETE FROM orders WHERE id = ?').run(orderId);
+    
+    io.emit('order-status-updated', { id: orderId, deleted: true });
     io.emit('stats-update');
     res.json({ success: true });
   });
@@ -437,14 +614,14 @@ async function startServer() {
   // Admin Stats
   app.get('/api/admin/stats', authenticate, (req: any, res: any) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
-    
+
     const totalOrders = db.prepare('SELECT COUNT(*) as count FROM orders').get() as any;
     const activeOrders = db.prepare("SELECT COUNT(*) as count FROM orders WHERE status != 'served'").get() as any;
     const completedOrders = db.prepare("SELECT COUNT(*) as count FROM orders WHERE status = 'served'").get() as any;
     const revenue = db.prepare('SELECT SUM(total_price) as total FROM orders').get() as any;
     const activeStaff = db.prepare("SELECT COUNT(*) as count FROM users WHERE role IN ('waiter', 'kitchen') AND active = 1 AND left_company = 0").get() as any;
     const totalStaff = db.prepare("SELECT COUNT(*) as count FROM users WHERE role IN ('waiter', 'kitchen') AND left_company = 0").get() as any;
-    
+
     res.json({
       totalOrders: totalOrders.count,
       activeOrders: activeOrders.count,

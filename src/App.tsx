@@ -6,6 +6,8 @@ import WaiterDashboard from './pages/waiter/Dashboard';
 import KitchenDashboard from './pages/kitchen/Dashboard';
 import AdminDashboard from './pages/admin/Dashboard';
 
+import BillerDashboard from './pages/biller/Dashboard';
+
 const ProtectedRoute = ({ children, roles }: { children: React.ReactNode, roles?: string[] }) => {
   const { user, loading } = useAuth();
 
@@ -30,6 +32,7 @@ const RoleBasedHome = () => {
     case 'admin': return <AdminDashboard />;
     case 'waiter': return <WaiterDashboard />;
     case 'kitchen': return <KitchenDashboard />;
+    case 'biller': return <BillerDashboard />;
     default: return <Navigate to="/login" />;
   }
 };
@@ -62,6 +65,14 @@ export default function App() {
             element={
               <ProtectedRoute roles={['kitchen', 'admin']}>
                 <KitchenDashboard />
+              </ProtectedRoute>
+            } 
+          />
+          <Route 
+            path="/biller" 
+            element={
+              <ProtectedRoute roles={['biller', 'admin']}>
+                <BillerDashboard />
               </ProtectedRoute>
             } 
           />

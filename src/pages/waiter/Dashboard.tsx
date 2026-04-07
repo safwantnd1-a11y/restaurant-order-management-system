@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useSocket } from '../../hooks/useSocket';
-import { Plus, ShoppingCart, CheckCircle, Clock, LogOut, Search, Minus, X, Send, Utensils, ClipboardList, ChefHat, Wifi } from 'lucide-react';
+import { Plus, ShoppingCart, CheckCircle, Clock, LogOut, Search, Minus, X, Send, Utensils, ClipboardList, ChefHat, Wifi, DollarSign, Receipt } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -48,28 +48,36 @@ export default function WaiterDashboard() {
   useEffect(() => {
     fetchData();
     if (socket) {
+      socket.on('new-order', fetchData);
       socket.on('order-status-updated', fetchData);
       socket.on('menu-updated', fetchData);
+      socket.on('stats-update', fetchData);
     }
     return () => {
       if (socket) {
+        socket.off('new-order', fetchData);
         socket.off('order-status-updated', fetchData);
         socket.off('menu-updated', fetchData);
+        socket.off('stats-update', fetchData);
       }
     };
   }, [socket]);
 
   const fetchData = async () => {
-    const [menuRes, tablesRes, ordersRes, historyRes] = await Promise.all([
-      axios.get('/api/menu'),
-      axios.get('/api/tables'),
-      axios.get('/api/orders'),
-      axios.get('/api/orders?history=true')
-    ]);
-    setMenu(menuRes.data);
-    setTables(tablesRes.data);
-    setOrders(ordersRes.data);
-    setHistoryOrders(historyRes.data);
+    try {
+      const [menuRes, tablesRes, ordersRes, historyRes] = await Promise.all([
+        axios.get('/api/menu'),
+        axios.get('/api/tables'),
+        axios.get('/api/orders'),
+        axios.get('/api/orders?history=true')
+      ]);
+      setMenu(menuRes.data);
+      setTables(tablesRes.data);
+      setOrders(ordersRes.data);
+      setHistoryOrders(historyRes.data);
+    } catch (err) {
+      console.error('fetchData error', err);
+    }
   };
 
   // Each cart entry has a unique key: `${menu_id}_${portion}`
@@ -119,7 +127,41 @@ export default function WaiterDashboard() {
     fetchData();
   };
 
-  const categories = ['All', ...Array.from(new Set(menu.map(i => i.category).filter(Boolean)))];
+  const undoOrder = async (orderIds: number | number[]) => {
+    if(window.confirm('Are you sure you want to move the order(s) back to ready?')) {
+      const ids = Array.isArray(orderIds) ? orderIds : [orderIds];
+      await Promise.all(ids.map(id => axios.put(`/api/orders/${id}/status`, { status: 'ready' })));
+      fetchData();
+      setView('orders');
+    }
+  };
+
+  const deleteOrder = async (orderIds: number | number[]) => {
+    if (window.confirm('Are you sure you want to delete this order?')) {
+      try {
+        const ids = Array.isArray(orderIds) ? orderIds : [orderIds];
+        await Promise.all(ids.map(id => axios.delete(`/api/orders/${id}`)));
+        fetchData();
+      } catch (err: any) {
+        alert('Failed to delete order(s): ' + (err.response?.data?.error || err.message));
+      }
+    }
+  };
+
+  const requestBill = async (tableId: number) => {
+    if (window.confirm('Request bill for this table? This will notify the admin.')) {
+      try {
+         await axios.put(`/api/tables/${tableId}/request-bill`);
+         alert('Bill requested successfully!');
+         fetchData();
+      } catch (err) {
+         alert('Failed to request bill.');
+      }
+    }
+  };
+
+
+  const FIXED_CATEGORIES = ['All', 'Main', 'Starter', 'Drink', 'Chinese'];
   const cartTotal = cart.reduce((sum, i) => sum + i.quantity, 0);
 
   const filteredMenu = menu.filter(item => {
@@ -129,6 +171,17 @@ export default function WaiterDashboard() {
     const vegMatch  = vegFilter === 'all' ? true : vegFilter === 'veg' ? !!item.is_veg : !item.is_veg;
     return catMatch && srchMatch && vegMatch;
   });
+
+  // Group filtered items by category for section display
+  const groupedMenu = FIXED_CATEGORIES.slice(1).reduce((acc, cat) => {
+    const items = filteredMenu.filter(i => i.category === cat);
+    if (items.length > 0) acc[cat] = items;
+    return acc;
+  }, {} as Record<string, any[]>);
+
+  // Items that don't belong to any of the 4 fixed categories
+  const otherItems = filteredMenu.filter(i => !FIXED_CATEGORIES.slice(1).includes(i.category));
+  if (otherItems.length > 0) groupedMenu['Other'] = otherItems;
 
   return (
     <div className="min-h-screen" style={{ background: '#0a0a0f', color: 'white' }}>
@@ -174,7 +227,7 @@ export default function WaiterDashboard() {
         <div className="flex gap-1 p-1 rounded-2xl" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
           {[
             { key: 'menu',   label: 'New',     icon: <Utensils size={14} /> },
-            { key: 'orders', label: 'Active',  icon: <ClipboardList size={14} />, badge: orders.filter(o => o.status !== 'served').length },
+            { key: 'orders', label: 'Active',  icon: <ClipboardList size={14} />, badge: orders.length },
             { key: 'history', label: 'History', icon: <Clock size={14} /> },
           ].map(tab => (
             <motion.button
@@ -234,7 +287,7 @@ export default function WaiterDashboard() {
                 {selectedTable && (
                   <motion.div className="mt-2 text-xs font-medium" style={{ color: '#fb923c' }}
                     initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }}>
-                    ✓ Table {tables.find(t => t.id === selectedTable)?.table_number} selected
+                    ✓ {tables.find(t => t.id === selectedTable)?.table_number} selected
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -257,19 +310,25 @@ export default function WaiterDashboard() {
               </AnimatePresence>
             </motion.div>
 
-            {/* Category Tabs */}
-            <motion.div className="flex gap-2 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}
-              initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.22 }}>
-              {categories.map((cat, i) => (
-                <motion.button key={cat} onClick={() => setActiveCategory(cat)}
-                  className="flex-shrink-0 px-4 py-1.5 rounded-full text-xs font-semibold"
-                  style={activeCategory === cat
-                    ? { background: '#f97316', color: 'white' }
-                    : { background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.4)', border: '1px solid rgba(255,255,255,0.08)' }}
-                  whileHover={{ scale: 1.06 }} whileTap={{ scale: 0.94 }}
+            {/* Category Tabs — fixed 4 categories */}
+            <motion.div className="flex gap-2" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.22 }}>
+              {[
+                { key: 'All',     label: 'All Items', icon: '🍽️' },
+                { key: 'Main',    label: 'Main',      icon: '🍛' },
+                { key: 'Starter', label: 'Starter',   icon: '🥗' },
+                { key: 'Drink',   label: 'Drink',     icon: '🥤' },
+                { key: 'Chinese', label: 'Chinese',   icon: '🍜' },
+              ].map((cat, i) => (
+                <motion.button key={cat.key} onClick={() => setActiveCategory(cat.key)}
+                  className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-2xl text-xs font-bold"
+                  style={activeCategory === cat.key
+                    ? { background: 'linear-gradient(135deg,#f97316,#ea580c)', color: 'white', boxShadow: '0 4px 12px rgba(249,115,22,0.35)' }
+                    : { background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.45)', border: '1px solid rgba(255,255,255,0.08)' }}
+                  whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.93 }}
                   initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.24 + i * 0.05 }}>
-                  {cat}
+                  transition={{ delay: 0.22 + i * 0.05 }}>
+                  <span>{cat.icon}</span>
+                  {cat.label}
                 </motion.button>
               ))}
             </motion.div>
@@ -292,92 +351,151 @@ export default function WaiterDashboard() {
               ))}
             </motion.div>
 
-            {/* Menu Items */}
-            <motion.div className="space-y-3" variants={containerVariants} initial="hidden" animate="show">
-              {filteredMenu.length === 0 ? (
-                <motion.div className="text-center py-16" style={{ color: 'rgba(255,255,255,0.2)' }}
-                  initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-                  <Utensils size={40} className="mx-auto mb-3 opacity-30" />
-                  <p className="font-medium">No items found</p>
-                </motion.div>
-              ) : filteredMenu.map(item => {
-                const inCartHalf = cart.find(c => c.cartKey === `${item.id}_half`);
-                const inCartFull = cart.find(c => c.cartKey === `${item.id}_full`);
-                const hasHalf = Number(item.half_price) > 0;
+            {/* Menu Items — grouped by category */}
+            {filteredMenu.length === 0 ? (
+              <motion.div className="text-center py-16" style={{ color: 'rgba(255,255,255,0.2)' }}
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                <Utensils size={40} className="mx-auto mb-3 opacity-30" />
+                <p className="font-medium">No items found</p>
+              </motion.div>
+            ) : (
+              <div className="space-y-6">
+                {Object.entries(activeCategory === 'All' ? groupedMenu : { [activeCategory]: filteredMenu }).map(([catName, items]) => (
+                  <motion.div key={catName} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+                    {/* Category Section Header */}
+                    <div className="flex items-center gap-3 mb-3">
+                      <span className="text-lg">
+                        {catName === 'Main' ? '🍛' : catName === 'Starter' ? '🥗' : catName === 'Drink' ? '🥤' : catName === 'Chinese' ? '🍜' : '🍽️'}
+                      </span>
+                      <h3 className="font-black text-white text-base tracking-wide">{catName}</h3>
+                      <div className="flex-1 h-px" style={{ background: 'rgba(255,255,255,0.06)' }} />
+                      <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: 'rgba(249,115,22,0.1)', color: '#f97316' }}>
+                        {(items as any[]).length} items
+                      </span>
+                    </div>
 
-                return (
-                  <motion.div key={item.id} variants={itemVariants}
-                    className="rounded-3xl p-4 flex items-center gap-4"
-                    style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}
-                    whileHover={{ scale: 1.015, borderColor: 'rgba(249,115,22,0.2)' }}
-                    transition={{ type: 'spring', stiffness: 300, damping: 24 }}>
-
-                    {/* Thumbnail */}
-                    {item.image_url ? (
-                      <img src={item.image_url} alt={item.name} className="w-16 h-16 rounded-2xl object-cover flex-shrink-0" />
-                    ) : (
-                      <div className="w-16 h-16 rounded-2xl flex items-center justify-center flex-shrink-0"
-                        style={{ background: 'rgba(249,115,22,0.1)' }}>
-                        <ChefHat size={22} style={{ color: '#f97316' }} />
+                    {catName === 'Drink' ? (() => {
+                      const subGroups: Record<string, any[]> = {};
+                      (items as any[]).forEach((item: any) => {
+                        const sub = (item.sub_category || '').trim();
+                        if (!subGroups[sub]) subGroups[sub] = [];
+                        subGroups[sub].push(item);
+                      });
+                      return (
+                        <div className="space-y-4">
+                          {Object.entries(subGroups).map(([sub, subItems]) => (
+                            <div key={sub || '__default__'}>
+                              {sub !== '' && (
+                                <div className="flex items-center gap-2 mb-2">
+                                  <span className="text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full"
+                                    style={{ background: 'rgba(56,189,248,0.1)', color: '#7dd3fc', border: '1px solid rgba(56,189,248,0.2)' }}>
+                                    💧 {sub}
+                                  </span>
+                                  <div className="flex-1 h-px" style={{ background: 'rgba(56,189,248,0.08)' }} />
+                                </div>
+                              )}
+                              <div className="grid grid-cols-2 gap-3">
+                                {subItems.map((item: any) => {
+                                  const hasHalf = Number(item.half_price) > 0;
+                                  return (
+                                    <motion.div key={item.id}
+                                      className="rounded-2xl p-3 flex flex-col gap-2"
+                                      style={{ background: item.out_of_stock ? 'rgba(255,255,255,0.02)' : 'rgba(56,189,248,0.04)', border: `1px solid ${item.out_of_stock ? 'rgba(255,255,255,0.04)' : 'rgba(56,189,248,0.12)'}`, opacity: item.out_of_stock ? 0.55 : 1 }}
+                                      whileHover={!item.out_of_stock ? { scale: 1.02, borderColor: 'rgba(56,189,248,0.35)' } : {}}
+                                      transition={{ type: 'spring', stiffness: 300, damping: 24 }}>
+                                      <div className="flex items-start gap-1.5">
+                                        <span style={{ marginTop: 3, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, width: 13, height: 13, border: '1.5px solid #38bdf8', borderRadius: 2 }}>
+                                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#38bdf8', display: 'block' }} />
+                                        </span>
+                                        <p className="font-semibold text-white text-sm leading-tight flex-1">{item.name}</p>
+                                      </div>
+                                      <div className="flex items-center gap-1.5 flex-wrap">
+                                        {Number(item.price) > 0 && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: 'rgba(56,189,248,0.1)', color: '#7dd3fc' }}>500ml ₹{item.price}</span>}
+                                        {hasHalf && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: 'rgba(56,189,248,0.06)', color: '#93c5fd' }}>250ml ₹{item.half_price}</span>}
+                                        {item.out_of_stock && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: 'rgba(239,68,68,0.12)', color: '#f87171' }}>Out of Stock</span>}
+                                      </div>
+                                      {!item.out_of_stock && (
+                                        <div className="flex items-center gap-2 mt-auto">
+                                          {hasHalf ? (
+                                            <select className="flex-1 text-[11px] font-bold py-1.5 px-2 rounded-xl outline-none cursor-pointer"
+                                              style={{ background: 'rgba(56,189,248,0.08)', border: '1px solid rgba(56,189,248,0.2)', color: '#7dd3fc' }}
+                                              value={selectedPortions[item.id] || 'full'}
+                                              onChange={e => setSelectedPortions({ ...selectedPortions, [item.id]: e.target.value })}>
+                                              <option value="full">500 ml</option>
+                                              <option value="half">250 ml</option>
+                                            </select>
+                                          ) : (
+                                            <span className="flex-1 text-[10px] text-center font-bold py-1 rounded-xl" style={{ background: 'rgba(56,189,248,0.08)', color: '#7dd3fc', border: '1px solid rgba(56,189,248,0.15)' }}>500 ml</span>
+                                          )}
+                                          <motion.button onClick={() => addToCart(item, (selectedPortions[item.id] || 'full').toLowerCase())}
+                                            whileTap={{ scale: 0.85 }} whileHover={{ scale: 1.08 }}
+                                            className="w-8 h-8 flex items-center justify-center rounded-xl flex-shrink-0"
+                                            style={{ background: 'rgba(56,189,248,0.15)', color: '#7dd3fc', border: '1px solid rgba(56,189,248,0.3)' }}>
+                                            <Plus size={15} />
+                                          </motion.button>
+                                        </div>
+                                      )}
+                                    </motion.div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })() : (
+                      <div className="grid grid-cols-2 gap-3">
+                        {(items as any[]).map((item: any) => {
+                          const hasHalf = Number(item.half_price) > 0;
+                          const isLiquid = item.item_type === 'liquid';
+                          const dotColor = isLiquid ? '#38bdf8' : item.is_veg ? '#22c55e' : '#ef4444';
+                          return (
+                            <motion.div key={item.id}
+                              className="rounded-2xl p-3 flex flex-col gap-2"
+                              style={{ background: item.out_of_stock ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.04)', border: `1px solid ${item.out_of_stock ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.08)'}`, opacity: item.out_of_stock ? 0.55 : 1 }}
+                              whileHover={!item.out_of_stock ? { scale: 1.02, borderColor: 'rgba(249,115,22,0.3)' } : {}}
+                              transition={{ type: 'spring', stiffness: 300, damping: 24 }}>
+                              <div className="flex items-start gap-1.5">
+                                <span style={{ marginTop: 3, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, width: 13, height: 13, border: `1.5px solid ${dotColor}`, borderRadius: 2 }}>
+                                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: dotColor, display: 'block' }} />
+                                </span>
+                                <p className="font-semibold text-white text-sm leading-tight flex-1">{item.name}</p>
+                              </div>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                {Number(item.price) > 0 && <span className="text-xs font-black" style={{ color: '#f97316' }}>₹{item.price}</span>}
+                                {hasHalf && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: 'rgba(249,115,22,0.1)', color: '#fb923c' }}>½ ₹{item.half_price}</span>}
+                                {item.out_of_stock && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: 'rgba(239,68,68,0.12)', color: '#f87171' }}>Out of Stock</span>}
+                              </div>
+                              {!item.out_of_stock && (
+                                <div className="flex items-center gap-2 mt-auto">
+                                  {hasHalf ? (
+                                    <select className="flex-1 text-[11px] font-bold py-1.5 px-2 rounded-xl outline-none cursor-pointer"
+                                      style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.7)' }}
+                                      value={selectedPortions[item.id] || 'full'}
+                                      onChange={e => setSelectedPortions({ ...selectedPortions, [item.id]: e.target.value })}>
+                                      <option value="full">Full</option>
+                                      <option value="half">Half</option>
+                                    </select>
+                                  ) : (
+                                    <span className="flex-1 text-[10px] text-center font-bold py-1 rounded-xl" style={{ background: 'rgba(255,255,255,0.04)', color: 'rgba(255,255,255,0.25)' }}>Full</span>
+                                  )}
+                                  <motion.button onClick={() => addToCart(item, (selectedPortions[item.id] || 'full').toLowerCase())}
+                                    whileTap={{ scale: 0.85 }} whileHover={{ scale: 1.08 }}
+                                    className="w-8 h-8 flex items-center justify-center rounded-xl flex-shrink-0"
+                                    style={{ background: 'rgba(249,115,22,0.2)', color: '#f97316', border: '1px solid rgba(249,115,22,0.35)' }}>
+                                    <Plus size={15} />
+                                  </motion.button>
+                                </div>
+                              )}
+                            </motion.div>
+                          );
+                        })}
                       </div>
                     )}
-
-                    {/* Info */}
-                    <div className="flex-1 min-w-0">
-                      <p className="font-semibold text-white truncate">{item.name}</p>
-                      <p className="text-xs mt-0.5 truncate" style={{ color: 'rgba(255,255,255,0.35)' }}>{item.description || item.category}</p>
-                      {/* No price row displayed */}
-                      {/* Badges */}
-                      <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
-                        {/* Indian veg/non-veg indicator */}
-                        <span title={item.is_veg ? 'Vegetarian' : 'Non-Vegetarian'}
-                          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                            width: 14, height: 14, flexShrink: 0,
-                            border: `1.5px solid ${item.is_veg ? '#22c55e' : '#ef4444'}`,
-                            borderRadius: 2 }}>
-                          <span style={{ width: 7, height: 7, borderRadius: '50%',
-                            background: item.is_veg ? '#22c55e' : '#ef4444', display: 'block' }} />
-                        </span>
-                        <span className="text-xs font-bold px-2 py-0.5 rounded-full"
-                          style={!item.out_of_stock
-                            ? { background: 'rgba(34,197,94,0.12)', color: '#4ade80' }
-                            : { background: 'rgba(239,68,68,0.12)', color: '#f87171' }}>
-                          {!item.out_of_stock ? 'Available' : 'Out of stock'}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Add-to-cart Controls */}
-                    <div className="flex-shrink-0 flex flex-col gap-2 items-end">
-                      <select 
-                        title="Portion Dropdown"
-                        className="input-dark text-xs py-1 px-2 rounded-lg outline-none cursor-pointer"
-                        style={{ border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(0,0,0,0.5)', width: '70px' }}
-                        value={selectedPortions[item.id] || 'N/A'}
-                        onChange={(e) => setSelectedPortions({...selectedPortions, [item.id]: e.target.value})}
-                      >
-                        <option value="N/A">N/A</option>
-                        <option value="HALF">HALF</option>
-                        <option value="FULL">FULL</option>
-                      </select>
-
-                      {item.out_of_stock ? (
-                        <div className="w-8 h-8 rounded-xl flex items-center justify-center opacity-25"
-                          style={{ background: 'rgba(255,255,255,0.04)' }}>
-                          <Plus size={14} style={{ color: 'rgba(255,255,255,0.3)' }} />
-                        </div>
-                      ) : (
-                        <motion.button onClick={() => addToCart(item, (selectedPortions[item.id] || 'N/A').toLowerCase())} whileTap={{ scale: 0.85 }}
-                          className="w-full flex items-center justify-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold"
-                          style={{ background: 'rgba(249,115,22,0.15)', color: '#f97316', border: '1px solid rgba(249,115,22,0.3)' }}>
-                          <Plus size={14} /> Add
-                        </motion.button>
-                      )}
-                    </div>
                   </motion.div>
-                );
-              })}
-            </motion.div>
+                ))}
+              </div>
+            )}
           </motion.div>
         )}
 
@@ -397,69 +515,102 @@ export default function WaiterDashboard() {
               </motion.div>
             ) : (
               <motion.div variants={containerVariants} initial="hidden" animate="show" className="space-y-3">
-                {orders.map(order => {
-                  const statusCfg = STATUS_CONFIG[order.status] || STATUS_CONFIG['new'];
-                  return (
-                    <motion.div key={order.id} variants={itemVariants}
-                      className="rounded-3xl overflow-hidden"
-                      style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}
-                      layout whileHover={{ scale: 1.01 }}>
-                      <div className="px-4 pt-4 pb-3 flex items-start justify-between"
-                        style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                        <div>
-                          <div className="flex items-center gap-2 mb-1">
-                            <motion.div className="w-2.5 h-2.5 rounded-full"
-                              style={{ background: statusCfg.dot }}
-                              animate={{ boxShadow: [`0 0 4px ${statusCfg.dot}`, `0 0 12px ${statusCfg.dot}`, `0 0 4px ${statusCfg.dot}`] }}
-                              transition={{ duration: 1.8, repeat: Infinity }} />
-                            <h3 className="font-bold text-white">Table {order.table_number.split(' ')[1]}</h3>
-                          </div>
-                          <p className="text-xs" style={{ color: 'rgba(255,255,255,0.3)' }}>
-                            Order #{order.id} · {new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          </p>
-                          {order.status !== 'served' && (
-                            <p className="text-xs mt-0.5 font-bold" style={{ color: '#fb923c' }}>
-                              ⏱ Wait time: {Math.max(0, Math.floor((now - new Date(order.created_at).getTime()) / 60000))} mins
-                            </p>
-                          )}
+                {(() => {
+                  const activeByTable: Record<number, any> = {};
+                  orders.forEach(order => {
+                      if (!activeByTable[order.table_id]) {
+                         activeByTable[order.table_id] = { ...order, orders: [] };
+                      }
+                      activeByTable[order.table_id].orders.push({ 
+                        id: order.id, 
+                        status: order.status, 
+                        created_at: order.created_at,
+                        items: order.items 
+                      });
+                  });
+                  return Object.values(activeByTable).sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+                })().map((tableGroup: any) => (
+                  <motion.div key={'grp_' + tableGroup.table_id} variants={itemVariants}
+                    className="rounded-3xl overflow-hidden mb-4"
+                    style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}
+                    layout whileHover={{ scale: 1.01 }}>
+                    <div className="px-4 pt-4 pb-3 flex items-start justify-between"
+                      style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <h3 className="font-bold text-white text-lg">Table {tableGroup.table_number.split(' ')[1] || tableGroup.table_number}</h3>
                         </div>
-                        <span className={`text-xs font-bold px-3 py-1.5 rounded-full uppercase tracking-wider ${statusCfg.className}`}>
-                          {statusCfg.label}
-                        </span>
+                        <p className="text-xs" style={{ color: 'rgba(255,255,255,0.3)' }}>
+                          {tableGroup.orders.length} active Ticket(s)
+                        </p>
                       </div>
-                      <div className="px-4 py-3">
-                        <ul className="space-y-1.5">
-                          {order.items.map((item: any, idx: number) => (
-                            <li key={idx} className="flex items-center gap-2 text-sm">
-                              <span className="font-bold text-xs px-2 py-0.5 rounded-lg"
-                                style={{ background: 'rgba(249,115,22,0.15)', color: '#f97316' }}>{item.quantity}×</span>
-                              {/* Portion badge */}
-                              {item.portion && (
-                                <span className="text-xs font-bold px-1.5 py-0.5 rounded-lg"
-                                  style={item.portion === 'half'
-                                    ? { background: 'rgba(139,92,246,0.15)', color: '#a78bfa' }
-                                    : { background: 'rgba(249,115,22,0.08)', color: 'rgba(249,115,22,0.6)' }}>
-                                  {item.portion === 'half' ? '½' : '⚪'}
+                        <div className="flex flex-col items-end gap-1">
+                           <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-orange-500/10 text-orange-400 border border-orange-500/20 uppercase whitespace-nowrap">
+                              Active
+                           </span>
+                           {(() => {
+                              const tableInfo = tables.find(t => t.id === tableGroup.table_id);
+                              if (tableInfo?.bill_requested) {
+                                return (
+                                  <span className="text-[10px] font-bold px-2 py-1 rounded bg-green-500/20 text-green-400 uppercase tracking-widest mt-1">
+                                    Bill Requested
+                                  </span>
+                                );
+                              } else {
+                                return (
+                                  <button onClick={() => requestBill(tableGroup.table_id)} 
+                                    className="text-[10px] font-bold px-2 py-1 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 uppercase tracking-widest mt-1 border border-blue-500/20 transition-colors">
+                                    Request Bill
+                                  </button>
+                                );
+                              }
+                           })()}
+                        </div>
+                    </div>
+                    <div className="px-4 py-3 space-y-4">
+                      {tableGroup.orders.map((subOrder: any) => {
+                        const statusCfg = STATUS_CONFIG[subOrder.status] || STATUS_CONFIG['new'];
+                        return (
+                          <div key={subOrder.id} className="p-3 rounded-2xl bg-white/5 border border-white/5">
+                             <div className="flex justify-between items-center mb-2 pb-1 border-b border-white/5">
+                                <span className="text-[10px] font-bold opacity-40"># {subOrder.id} • {new Date(subOrder.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                                <span className={`text-[9px] font-black px-2 py-0.5 rounded-full uppercase ${statusCfg.className}`}>
+                                   {statusCfg.label}
                                 </span>
-                              )}
-                              <span style={{ color: 'rgba(255,255,255,0.75)' }}>{item.item_name}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                      {order.status === 'ready' && (
-                        <motion.button onClick={() => markAsServed(order.id)}
-                          className="w-full py-3.5 flex items-center justify-center gap-2 font-bold text-sm"
-                          style={{ background: 'linear-gradient(135deg, #22c55e, #16a34a)', color: 'white' }}
-                          whileTap={{ scale: 0.98 }}
-                          initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-                          <CheckCircle size={16} />
-                          Mark as Served
-                        </motion.button>
-                      )}
-                    </motion.div>
-                  );
-                })}
+                             </div>
+                             <ul className="space-y-1.5">
+                               {subOrder.items.map((item: any, idx: number) => (
+                                 <li key={idx} className="flex items-center gap-2 text-sm">
+                                   <span className="font-bold text-xs text-orange-500">{item.quantity}×</span>
+                                   <span style={{ color: 'rgba(255,255,255,0.75)' }}>{item.item_name}</span>
+                                   {item.portion && item.portion !== 'full' && <span className="text-[9px] opacity-40 capitalize">({item.portion})</span>}
+                                 </li>
+                               ))}
+                             </ul>
+                             <div className="mt-3 flex gap-2">
+                                {subOrder.status === 'ready' && (
+                                  <button onClick={() => markAsServed(subOrder.id)} className="flex-1 py-1.5 rounded-lg bg-green-500 text-white text-[10px] font-bold">SERVE</button>
+                                )}
+                                {subOrder.status === 'served' && (
+                                  <button onClick={() => undoOrder(subOrder.id)} className="flex-1 py-1.5 rounded-lg bg-white/10 text-white text-[10px] font-bold">UNDO</button>
+                                )}
+                                <button onClick={() => deleteOrder(subOrder.id)} className="p-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20"><X size={12}/></button>
+                             </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <div className="px-4 pb-3">
+                      <motion.button onClick={() => { setSelectedTable(tableGroup.table_id); setView('menu'); window.scrollTo({top: 0, behavior: 'smooth'}); }}
+                        className="w-full py-2.5 flex items-center justify-center gap-1.5 font-bold text-xs mt-1"
+                        style={{ background: 'rgba(249,115,22,0.1)', color: '#f97316', border: '1px dashed rgba(249,115,22,0.3)', borderRadius: '12px' }}
+                        whileHover={{ background: 'rgba(249,115,22,0.15)' }}
+                        whileTap={{ scale: 0.98 }}>
+                        <Plus size={14} /> Add Items to Table
+                      </motion.button>
+                    </div>
+                  </motion.div>
+                ))}
               </motion.div>
             )}
           </motion.div>
@@ -485,40 +636,57 @@ export default function WaiterDashboard() {
                   const statusCfg = STATUS_CONFIG[order.status] || STATUS_CONFIG['new'];
                   return (
                     <motion.div key={order.id} variants={itemVariants}
-                      className="rounded-3xl overflow-hidden"
-                      style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.04)' }}
+                      className="rounded-3xl overflow-hidden relative"
+                      style={{ background: 'linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01))', border: '1px solid rgba(255,255,255,0.08)', boxShadow: '0 4px 20px rgba(0,0,0,0.2)' }}
                       layout>
-                      <div className="px-4 pt-4 pb-3 flex items-start justify-between"
-                        style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                      <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-5 rounded-bl-[100px] pointer-events-none" />
+                      <div className="px-5 pt-5 pb-3 flex items-start justify-between"
+                        style={{ borderBottom: '1px dashed rgba(255,255,255,0.05)' }}>
                         <div>
                           <div className="flex items-center gap-2 mb-1">
-                            <h3 className="font-bold text-white">Table {order.table_number.split(' ')[1]}</h3>
+                            <h3 className="font-bold text-white text-lg">Table {order.table_number.split(' ')[1]}</h3>
+                            <span className="text-xs font-bold px-2 py-0.5 rounded-md" style={{ background: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.6)' }}>
+                              #{order.id}
+                            </span>
                           </div>
-                          <p className="text-xs" style={{ color: 'rgba(255,255,255,0.3)' }}>
-                            Order #{order.id} · {new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          <p className="text-xs" style={{ color: 'rgba(255,255,255,0.4)' }}>
+                            <Clock size={12} className="inline mr-1 opacity-60 relative -top-[1px]" />
+                            {new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                           </p>
-                          <p className="text-xs mt-0.5 font-semibold" style={{ color: 'rgba(255,255,255,0.2)' }}>
-                            Served by {order.waiter_name}
+                          <p className="text-xs mt-1 font-semibold" style={{ color: 'rgba(255,255,255,0.3)' }}>
+                            Waiter: <span className="text-white opacity-70">{order.waiter_name}</span>
                           </p>
                         </div>
-                        <span className={`text-xs font-bold px-3 py-1.5 rounded-full uppercase tracking-wider ${statusCfg.className}`}>
-                          {statusCfg.label}
-                        </span>
+                        <div className="text-right">
+                          <span className={`text-[10px] font-bold px-2 py-1 rounded-full uppercase tracking-wider mt-1 inline-block ${statusCfg.className}`} style={{ opacity: 0.8 }}>
+                            {statusCfg.label}
+                          </span>
+                        </div>
                       </div>
-                      <div className="px-4 py-3">
-                        <ul className="space-y-1.5">
-                          {order.items.map((item: any, idx: number) => (
-                            <li key={idx} className="flex items-center gap-2 text-sm opacity-60">
-                              <span className="font-bold text-xs">{item.quantity}×</span>
-                              {item.portion && (
-                                <span className="text-xs font-bold px-1.5 py-0.5 rounded-lg border border-white border-opacity-10">
-                                  {item.portion === 'half' ? '½' : '⚪'}
-                                </span>
-                              )}
-                              <span>{item.item_name}</span>
-                            </li>
-                          ))}
+                      <div className="px-5 py-4 bg-black bg-opacity-20">
+                        <ul className="space-y-2">
+                          {order.items.map((item: any, idx: number) => {
+                            return (
+                              <li key={idx} className="flex items-center justify-between text-sm">
+                                <div className="flex items-center gap-2 opacity-80">
+                                  <span className="font-bold text-xs" style={{ color: '#f97316' }}>{item.quantity}×</span>
+                                  {item.portion && (
+                                    <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded border border-white border-opacity-10" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                                      {item.portion === 'half' ? '½ Half' : '⚪ Full'}
+                                    </span>
+                                  )}
+                                  <span className="text-white">{item.item_name}</span>
+                                </div>
+                              </li>
+                            );
+                          })}
                         </ul>
+                      </div>
+                      <div className="px-5 py-3 flex gap-2" style={{ borderTop: '1px solid rgba(255,255,255,0.03)' }}>
+                        <div className="flex-1 py-3 rounded-xl text-xs font-bold text-center"
+                          style={{ background: 'rgba(99,102,241,0.08)', color: 'rgba(99,102,241,0.6)', border: '1px solid rgba(99,102,241,0.15)' }}>
+                          ✓ Paid & Cleared
+                        </div>
                       </div>
                     </motion.div>
                   );
@@ -574,7 +742,7 @@ export default function WaiterDashboard() {
                     {selectedTable && (
                       <motion.p className="text-sm mt-0.5" style={{ color: '#f97316' }}
                         initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }}>
-                        Table {tables.find(t => t.id === selectedTable)?.table_number}
+                        {tables.find(t => t.id === selectedTable)?.table_number}
                       </motion.p>
                     )}
                   </AnimatePresence>

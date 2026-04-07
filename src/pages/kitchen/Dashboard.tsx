@@ -37,12 +37,14 @@ export default function KitchenDashboard() {
       });
       socket.on('order-status-updated', fetchOrders);
       socket.on('menu-updated', fetchMenu);
+      socket.on('stats-update', fetchOrders);
     }
     return () => {
       if (socket) {
         socket.off('new-order');
-        socket.off('order-status-updated');
-        socket.off('menu-updated');
+        socket.off('order-status-updated', fetchOrders);
+        socket.off('menu-updated', fetchMenu);
+        socket.off('stats-update', fetchOrders);
       }
     };
   }, [socket]);
@@ -63,6 +65,17 @@ export default function KitchenDashboard() {
   const fetchMenu = async () => {
     const res = await axios.get('/api/menu');
     setMenu(res.data);
+  };
+
+  const deleteOrder = async (orderId: number) => {
+    if (window.confirm('Are you sure you want to delete this order?')) {
+      try {
+        await axios.delete(`/api/orders/${orderId}`);
+        fetchOrders();
+      } catch (err: any) {
+        alert('Failed to delete order: ' + (err.response?.data?.error || err.message));
+      }
+    }
   };
 
   const updateStatus = async (orderId: number, currentStatus: string) => {
@@ -322,6 +335,13 @@ export default function KitchenDashboard() {
                             <CheckCircle size={16} /> READY FOR PICKUP
                           </motion.div>
                         )}
+                        <motion.button onClick={() => deleteOrder(order.id)}
+                          className="w-full mt-2 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
+                          style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)' }}
+                          whileHover={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}
+                          whileTap={{ scale: 0.96 }}>
+                          <X size={12} /> CANCEL/DELETE
+                        </motion.button>
                       </div>
                     </motion.div>
                   );
