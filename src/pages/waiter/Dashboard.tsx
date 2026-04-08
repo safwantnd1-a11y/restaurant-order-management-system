@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useSocket } from '../../hooks/useSocket';
-import { Plus, ShoppingCart, CheckCircle, Clock, LogOut, Search, Minus, X, Send, Utensils, ClipboardList, ChefHat, Wifi } from 'lucide-react';
+import { Plus, ShoppingCart, CheckCircle, Clock, LogOut, Search, Minus, X, Send, Utensils, ClipboardList, ChefHat, Wifi, AlertCircle } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -10,6 +10,8 @@ const STATUS_CONFIG: Record<string, { label: string; className: string; dot: str
   preparing:{ label: 'Preparing', className: 'badge-preparing', dot: '#eab308' },
   ready:    { label: 'Ready!',    className: 'badge-ready',    dot: '#22c55e' },
   served:   { label: 'Served',   className: 'badge-served',   dot: '#6366f1' },
+  billing:  { label: 'Billing...', className: 'badge-billing',  dot: '#06b6d4' },
+  paid:     { label: 'Paid',      className: 'badge-paid',      dot: '#10b981' },
 };
 
 const containerVariants = {
@@ -38,7 +40,8 @@ export default function WaiterDashboard() {
   const [activeCategory, setActiveCategory] = useState('All');
   const [vegFilter, setVegFilter] = useState<'all' | 'veg' | 'nonveg'>('all');
   const [selectedPortions, setSelectedPortions] = useState<Record<number, string>>({});
-  const [now, setNow] = useState(Date.now());
+   const [now, setNow] = useState(Date.now());
+   const [fetchError, setFetchError] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 60000);
@@ -50,26 +53,64 @@ export default function WaiterDashboard() {
     if (socket) {
       socket.on('order-status-updated', fetchData);
       socket.on('menu-updated', fetchData);
+      // ✅ Real-time: when admin assigns/changes tables, auto-refresh waiter panel
+      socket.on('staff-status-updated', fetchData);
     }
     return () => {
       if (socket) {
         socket.off('order-status-updated', fetchData);
         socket.off('menu-updated', fetchData);
+        socket.off('staff-status-updated', fetchData);
       }
     };
   }, [socket]);
 
   const fetchData = async () => {
-    const [menuRes, tablesRes, ordersRes, historyRes] = await Promise.all([
-      axios.get('/api/menu'),
-      axios.get('/api/tables'),
-      axios.get('/api/orders'),
-      axios.get('/api/orders?history=true')
-    ]);
-    setMenu(menuRes.data);
-    setTables(tablesRes.data);
-    setOrders(ordersRes.data);
-    setHistoryOrders(historyRes.data);
+    setFetchError(null);
+
+    // ✅ BULLETPROOF: Always inject fresh token before fetching
+    // This works regardless of interceptor timing or HMR cache issues
+    const freshToken = localStorage.getItem('token');
+    if (freshToken) {
+      axios.defaults.headers.common['Authorization'] = `Bearer ${freshToken}`;
+    }
+
+    // Fetch menu independently (no auth needed)
+    try {
+      const menuRes = await axios.get('/api/menu');
+      setMenu(Array.isArray(menuRes.data) ? menuRes.data : []);
+    } catch { setMenu([]); }
+
+    // Fetch tables — needs auth, handle separately
+    try {
+      const tablesRes = await axios.get('/api/waiter/my-tables');
+      const tableData = Array.isArray(tablesRes.data) ? tablesRes.data : [];
+      setTables(tableData);
+      if (tableData.length === 0) {
+        // Silently mark as empty — admin hasn't assigned yet
+        setFetchError(null);
+      }
+    } catch (e: any) {
+      setTables([]);
+      const status = e?.response?.status;
+      if (status === 401 || status === 403) {
+        setFetchError('Session expired — please logout and login again');
+      } else {
+        setFetchError(e.response?.data?.error || e.message || 'Could not load tables');
+      }
+    }
+
+    // Fetch active orders
+    try {
+      const ordersRes = await axios.get('/api/orders');
+      setOrders(Array.isArray(ordersRes.data) ? ordersRes.data : []);
+    } catch { setOrders([]); }
+
+    // Fetch history
+    try {
+      const historyRes = await axios.get('/api/orders?history=true');
+      setHistoryOrders(Array.isArray(historyRes.data) ? historyRes.data : []);
+    } catch { setHistoryOrders([]); }
   };
 
   // Each cart entry has a unique key: `${menu_id}_${portion}`
@@ -100,7 +141,6 @@ export default function WaiterDashboard() {
       await axios.post('/api/orders', {
         table_id: selectedTable,
         items: cart.map(i => ({ menu_id: i.menu_id, quantity: i.quantity, portion: i.portion || 'full' })),
-        total_price: 0,
       });
       setCart([]);
       setSelectedTable(null);
@@ -116,6 +156,11 @@ export default function WaiterDashboard() {
 
   const markAsServed = async (orderId: number) => {
     await axios.put(`/api/orders/${orderId}/status`, { status: 'served' });
+    fetchData();
+  };
+
+  const requestBilling = async (orderId: number) => {
+    await axios.put(`/api/orders/${orderId}/status`, { status: 'billing' });
     fetchData();
   };
 
@@ -160,6 +205,13 @@ export default function WaiterDashboard() {
             animate={{ opacity: [0.7, 1, 0.7] }} transition={{ duration: 2, repeat: Infinity }}>
             <Wifi size={10} /> Online
           </motion.div>
+          <motion.button onClick={fetchData} whileTap={{ scale: 0.9 }} whileHover={{ scale: 1.1 }}
+            className="w-9 h-9 rounded-xl flex items-center justify-center"
+            style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
+            <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: 0 }} key={now}>
+              <Plus size={16} style={{ color: 'rgba(255,255,255,0.5)', rotate: '45deg' }} />
+            </motion.div>
+          </motion.button>
           <motion.button onClick={logout} whileTap={{ scale: 0.9 }} whileHover={{ scale: 1.1 }}
             className="w-9 h-9 rounded-xl flex items-center justify-center"
             style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
@@ -214,8 +266,23 @@ export default function WaiterDashboard() {
             <motion.section initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
               <p className="text-xs font-bold uppercase tracking-widest mb-3" style={{ color: 'rgba(255,255,255,0.3)' }}>Select Table</p>
               <motion.div className="grid grid-cols-5 gap-2" variants={containerVariants} initial="hidden" animate="show">
-                {tables.map(t => {
-                  const num = t.table_number.split(' ')[1] || t.table_number;
+                {fetchError ? (
+                  <div className="col-span-5 p-6 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-500 text-xs text-center">
+                    <p className="font-bold">Error loading tables</p>
+                    <p className="opacity-60">{fetchError}</p>
+                    <button onClick={fetchData} className="mt-2 px-4 py-1 bg-red-500/10 rounded-lg underline">Retry</button>
+                  </div>
+                ) : tables.length === 0 ? (
+                  <div className="col-span-5 p-6 rounded-2xl bg-orange-500/5 border border-orange-500/10 text-orange-500 text-xs text-center flex flex-col items-center gap-2">
+                    <AlertCircle size={24} className="opacity-50" />
+                    <p className="font-bold">No tables assigned by admin yet.</p>
+                    <p className="opacity-60 text-[10px]">Staff DB ID: {user?.id} | Name: {user?.name}</p>
+                    <motion.button onClick={fetchData} className="mt-2 px-4 py-1.5 rounded-full bg-orange-500/10 border border-orange-500/20 text-[10px] font-bold">
+                      RELOAD TABLES
+                    </motion.button>
+                  </div>
+                ) : (tables || []).map(t => {
+                  const num = (t.table_number || '').split(' ')[1] || t.table_number || '?';
                   const isSelected = selectedTable === t.id;
                   return (
                     <motion.button key={t.id} variants={itemVariants}
@@ -326,7 +393,14 @@ export default function WaiterDashboard() {
                     <div className="flex-1 min-w-0">
                       <p className="font-semibold text-white truncate">{item.name}</p>
                       <p className="text-xs mt-0.5 truncate" style={{ color: 'rgba(255,255,255,0.35)' }}>{item.description || item.category}</p>
-                      {/* No price row displayed */}
+                      <div className="flex items-center gap-2 mt-1">
+                        <p className="text-sm font-bold text-orange-400">₹{item.price}</p>
+                        {Number(item.half_price) > 0 && (
+                          <p className="text-[10px] font-bold py-0.5 px-1.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                            ½ ₹{item.half_price}
+                          </p>
+                        )}
+                      </div>
                       {/* Badges */}
                       <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
                         {/* Indian veg/non-veg indicator */}
@@ -351,14 +425,13 @@ export default function WaiterDashboard() {
                     <div className="flex-shrink-0 flex flex-col gap-2 items-end">
                       <select 
                         title="Portion Dropdown"
-                        className="input-dark text-xs py-1 px-2 rounded-lg outline-none cursor-pointer"
-                        style={{ border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(0,0,0,0.5)', width: '70px' }}
-                        value={selectedPortions[item.id] || 'N/A'}
+                        className="input-dark text-[10px] font-bold py-1 px-1.5 rounded-lg outline-none cursor-pointer"
+                        style={{ border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(0,0,0,0.5)', width: '64px' }}
+                        value={selectedPortions[item.id] || 'FULL'}
                         onChange={(e) => setSelectedPortions({...selectedPortions, [item.id]: e.target.value})}
                       >
-                        <option value="N/A">N/A</option>
-                        <option value="HALF">HALF</option>
                         <option value="FULL">FULL</option>
+                        {Number(item.half_price) > 0 && <option value="HALF">HALF</option>}
                       </select>
 
                       {item.out_of_stock ? (
@@ -367,7 +440,7 @@ export default function WaiterDashboard() {
                           <Plus size={14} style={{ color: 'rgba(255,255,255,0.3)' }} />
                         </div>
                       ) : (
-                        <motion.button onClick={() => addToCart(item, (selectedPortions[item.id] || 'N/A').toLowerCase())} whileTap={{ scale: 0.85 }}
+                        <motion.button onClick={() => addToCart(item, (selectedPortions[item.id] || 'FULL').toLowerCase())} whileTap={{ scale: 0.85 }}
                           className="w-full flex items-center justify-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold"
                           style={{ background: 'rgba(249,115,22,0.15)', color: '#f97316', border: '1px solid rgba(249,115,22,0.3)' }}>
                           <Plus size={14} /> Add
@@ -386,7 +459,7 @@ export default function WaiterDashboard() {
           <motion.div key="orders" className="px-4 pb-8 space-y-3 pt-4"
             initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
             transition={{ duration: 0.25 }}>
-            {orders.length === 0 ? (
+            {(orders || []).length === 0 ? (
               <motion.div className="flex flex-col items-center justify-center py-24 text-center"
                 initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}>
                 <motion.div animate={{ y: [0, -8, 0] }} transition={{ duration: 2.5, repeat: Infinity, ease: 'easeInOut' }}>
@@ -397,26 +470,36 @@ export default function WaiterDashboard() {
               </motion.div>
             ) : (
               <motion.div variants={containerVariants} initial="hidden" animate="show" className="space-y-3">
-                {orders.map(order => {
-                  const statusCfg = STATUS_CONFIG[order.status] || STATUS_CONFIG['new'];
-                  return (
-                    <motion.div key={order.id} variants={itemVariants}
-                      className="rounded-3xl overflow-hidden"
-                      style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}
-                      layout whileHover={{ scale: 1.01 }}>
-                      <div className="px-4 pt-4 pb-3 flex items-start justify-between"
-                        style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                        <div>
-                          <div className="flex items-center gap-2 mb-1">
-                            <motion.div className="w-2.5 h-2.5 rounded-full"
-                              style={{ background: statusCfg.dot }}
-                              animate={{ boxShadow: [`0 0 4px ${statusCfg.dot}`, `0 0 12px ${statusCfg.dot}`, `0 0 4px ${statusCfg.dot}`] }}
-                              transition={{ duration: 1.8, repeat: Infinity }} />
-                            <h3 className="font-bold text-white">Table {order.table_number.split(' ')[1]}</h3>
-                          </div>
-                          <p className="text-xs" style={{ color: 'rgba(255,255,255,0.3)' }}>
-                            Order #{order.id} · {new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          </p>
+                  {(orders || []).map(order => {
+                    const statusCfg = STATUS_CONFIG[order.status] || STATUS_CONFIG['new'];
+                    const sameTableOrders = (orders || []).filter(o => o.table_id === order.table_id && o.status !== 'served');
+                    const orderSequence = sameTableOrders.length > 1 
+                                          ? sameTableOrders.sort((a,b) => a.id - b.id).findIndex(o => o.id === order.id) + 1 
+                                          : null;
+
+                    return (
+                      <motion.div key={order.id} variants={itemVariants}
+                        className="rounded-3xl overflow-hidden"
+                        style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}
+                        layout whileHover={{ scale: 1.01 }}>
+                        <div className="px-4 pt-4 pb-3 flex items-start justify-between"
+                          style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                          <div>
+                            <div className="flex items-center gap-2 mb-1">
+                              <motion.div className="w-2.5 h-2.5 rounded-full"
+                                style={{ background: statusCfg.dot }}
+                                animate={{ boxShadow: [`0 0 4px ${statusCfg.dot}`, `0 0 12px ${statusCfg.dot}`, `0 0 4px ${statusCfg.dot}`] }}
+                                transition={{ duration: 1.8, repeat: Infinity }} />
+                              <h3 className="font-bold text-white">Table {(order.table_number || '').replace('Table ', '')}</h3>
+                              {orderSequence && orderSequence > 0 && (
+                                <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-orange-500/20 text-orange-400">
+                                  Order #{orderSequence}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs" style={{ color: 'rgba(255,255,255,0.3)' }}>
+                              ID: #{order.id} · {new Date(order.created_at || 0).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </p>
                           {order.status !== 'served' && (
                             <p className="text-xs mt-0.5 font-bold" style={{ color: '#fb923c' }}>
                               ⏱ Wait time: {Math.max(0, Math.floor((now - new Date(order.created_at).getTime()) / 60000))} mins
@@ -457,6 +540,22 @@ export default function WaiterDashboard() {
                           Mark as Served
                         </motion.button>
                       )}
+                      {order.status === 'served' && (
+                        <motion.button onClick={() => requestBilling(order.id)}
+                          className="w-full py-3.5 flex items-center justify-center gap-2 font-bold text-sm"
+                          style={{ background: 'linear-gradient(135deg, #06b6d4, #0891b2)', color: 'white' }}
+                          whileTap={{ scale: 0.98 }}
+                          initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                          <ShoppingCart size={16} />
+                          Request for Billing
+                        </motion.button>
+                      )}
+                      {order.status === 'billing' && (
+                        <div className="w-full py-3.5 flex items-center justify-center gap-2 font-bold text-sm bg-cyan-500/10 text-cyan-500 border-t border-cyan-500/20 uppercase tracking-widest">
+                          <Clock size={16} />
+                          Billing...
+                        </div>
+                      )}
                     </motion.div>
                   );
                 })}
@@ -464,10 +563,6 @@ export default function WaiterDashboard() {
             )}
           </motion.div>
         )}
-      </AnimatePresence>
-
-      {/* ===== HISTORY VIEW ===== */}
-      <AnimatePresence>
         {view === 'history' && (
           <motion.div key="history" className="px-4 pb-8 space-y-3 pt-4"
             initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}

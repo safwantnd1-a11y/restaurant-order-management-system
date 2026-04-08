@@ -11,42 +11,55 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<any>(null);
-  const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
-  const [loading, setLoading] = useState(true);
+// ✅ BULLETPROOF: Axios request interceptor — runs on EVERY request
+// This ensures the token is ALWAYS injected regardless of timing or HMR
+axios.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token) {
+    config.headers.set('Authorization', `Bearer ${token}`);
+  }
+  return config;
+}, (error) => Promise.reject(error));
 
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [user, setUser] = useState<any>(() => {
+    try {
+      const saved = localStorage.getItem('user');
+      return saved ? JSON.parse(saved) : null;
+    } catch { return null; }
+  });
+  const [token, setToken] = useState<string | null>(() => localStorage.getItem('token'));
+  const [loading] = useState(false);
+
+  // Keep axios default header in sync (belt + suspenders)
   useEffect(() => {
     if (token) {
       axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-      // In a real app, we'd verify the token here
-      const savedUser = localStorage.getItem('user');
-      if (savedUser) setUser(JSON.parse(savedUser));
+    } else {
+      delete axios.defaults.headers.common['Authorization'];
     }
-    setLoading(false);
   }, [token]);
 
   const login = async (email: string, password: string) => {
     const response = await axios.post('/api/auth/login', { email, password });
-    const { token, user } = response.data;
-    setToken(token);
-    setUser(user);
-    localStorage.setItem('token', token);
-    localStorage.setItem('user', JSON.stringify(user));
-    axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+    const { token: newToken, user: newUser } = response.data;
+    // Set IMMEDIATELY before any re-render
+    localStorage.setItem('token', newToken);
+    localStorage.setItem('user', JSON.stringify(newUser));
+    axios.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
+    setToken(newToken);
+    setUser(newUser);
   };
 
-  const logout = async () => {
-    try {
-      await axios.post('/api/auth/logout');
-    } catch (error) {
-      // Ignore logout network errors; still clear local session
-    }
-    setToken(null);
-    setUser(null);
+  const logout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     delete axios.defaults.headers.common['Authorization'];
+    setToken(null);
+    setUser(null);
+    
+    // Background logout
+    axios.post('/api/auth/logout').catch(() => {});
   };
 
   return (

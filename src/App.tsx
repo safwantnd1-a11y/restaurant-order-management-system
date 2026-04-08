@@ -6,21 +6,35 @@ import WaiterDashboard from './pages/waiter/Dashboard';
 import KitchenDashboard from './pages/kitchen/Dashboard';
 import AdminDashboard from './pages/admin/Dashboard';
 
-const ProtectedRoute = ({ children, roles }: { children: React.ReactNode, roles?: string[] }) => {
-  const { user, loading } = useAuth();
+interface EBProps { children: React.ReactNode; }
+interface EBState { hasError: boolean; }
 
-  if (loading) return (
-    <div className="min-h-screen flex flex-col items-center justify-center" style={{ background: '#0a0a0f' }}>
-      <div className="w-12 h-12 rounded-2xl flex items-center justify-center mb-4" style={{ background: 'linear-gradient(135deg, #f97316, #ea580c)', boxShadow: '0 4px 20px rgba(249,115,22,0.4)' }}>
-        <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin" />
+class ErrorBoundary extends React.Component<EBProps, EBState> {
+  state: EBState = { hasError: false };
+  static getDerivedStateFromError(): EBState { return { hasError: true }; }
+  render(): React.ReactNode {
+    if (this.state.hasError) return (
+      <div className="min-h-screen flex flex-col items-center justify-center p-8 bg-[#0a0a0f] text-center">
+        <div className="w-16 h-16 rounded-full bg-red-500/10 flex items-center justify-center mb-6">
+          <span className="text-3xl">⚠️</span>
+        </div>
+        <h2 className="text-xl font-bold text-white mb-2">Something went wrong</h2>
+        <p className="text-sm text-gray-500 mb-8 max-w-xs">The application encountered an unexpected error.</p>
+        <button onClick={() => window.location.reload()} className="px-6 py-2.5 rounded-xl bg-orange-500 text-white font-bold text-sm">Reload App</button>
       </div>
-      <p className="text-sm font-semibold" style={{ color: 'rgba(255,255,255,0.3)' }}>Loading ROMS…</p>
-    </div>
-  );
+    );
+    // @ts-ignore
+    const { children } = this.props;
+    return children;
+  }
+}
+
+const ProtectedRoute = ({ children, roles }: { children: React.ReactNode, roles?: string[] }) => {
+  const { user } = useAuth();
   if (!user) return <Navigate to="/login" />;
   if (roles && !roles.includes(user.role)) return <Navigate to="/" />;
 
-  return <>{children}</>;
+  return <ErrorBoundary>{children}</ErrorBoundary>;
 };
 
 const RoleBasedHome = () => {
