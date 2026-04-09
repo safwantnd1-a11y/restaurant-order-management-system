@@ -103,11 +103,7 @@
           ]
         }
       ],
-      "requestedExecutionLevel": "asInvoker",
-      "sign": false,
-      "forceCodeSigning": false,
-      "certificateSubjectName": null,
-      "signingHashAlgorithms": null
+      "requestedExecutionLevel": "asInvoker"
     },
     "nsis": {
       "oneClick": false,
