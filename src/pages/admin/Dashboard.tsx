@@ -1211,13 +1211,12 @@ export default function AdminDashboard() {
                               <p className="text-[10px] text-gray-500 mt-0.5">{new Date(order.created_at).toLocaleString()}</p>
                             </div>
                             <div className="text-right">
-                              <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-widest ${
-                                order.status === 'paid' ? 'bg-green-500/20 text-green-400' :
+                              <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-widest ${order.status === 'paid' ? 'bg-green-500/20 text-green-400' :
                                 order.status === 'billing' ? 'bg-cyan-500/20 text-cyan-400' :
-                                order.status === 'served' ? 'bg-indigo-500/20 text-indigo-400' :
-                                order.status === 'ready' ? 'bg-emerald-500/20 text-emerald-400' :
-                                'bg-orange-500/20 text-orange-400'
-                              }`}>{order.status}</span>
+                                  order.status === 'served' ? 'bg-indigo-500/20 text-indigo-400' :
+                                    order.status === 'ready' ? 'bg-emerald-500/20 text-emerald-400' :
+                                      'bg-orange-500/20 text-orange-400'
+                                }`}>{order.status}</span>
                               <p className="text-xl font-black text-orange-400 mt-2">₹{order.total_price}</p>
                             </div>
                           </div>

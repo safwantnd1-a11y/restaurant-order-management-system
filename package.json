@@ -1,15 +1,23 @@
 {
-  "name": "react-example",
+  "name": "roms-restaurant-system",
+  "productName": "Restaurant Order Management System",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Restaurant Order Management System - Professional Desktop Edition",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "start": "node server.ts"
+    "start": "node server.ts",
+    "electron:dev": "electron .",
+    "build:server": "node build-server.mjs",
+    "build:all": "npm run build && npm run build:server",
+    "electron:build": "npm run build:all && electron-builder --win --x64",
+    "dist": "npm run electron:build"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
@@ -22,6 +30,7 @@
     "cors": "^2.8.6",
     "date-fns": "^4.1.0",
     "dotenv": "^17.2.3",
+    "electron-updater": "^6.8.3",
     "express": "^4.21.2",
     "firebase": "^12.11.0",
     "jsonwebtoken": "^9.0.3",
@@ -42,9 +51,70 @@
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
+    "electron": "^33.4.11",
+    "electron-builder": "^24.13.3",
+    "esbuild": "^0.24.2",
+    "png-to-ico": "^3.0.1",
+    "sharp": "^0.34.5",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
-    "typescript": "~5.8.2",
-    "vite": "^6.2.0"
+    "typescript": "~5.8.2"
+  },
+  "build": {
+    "appId": "com.roms.restaurant",
+    "productName": "Restaurant Order Management System",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "safwantnd1-a11y",
+        "repo": "restaurant-order-management-system"
+      }
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "dist/**/*",
+      "server.cjs",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "server.cjs",
+      "node_modules/better-sqlite3/**/*",
+      "node_modules/bindings/**/*",
+      "node_modules/file-uri-to-path/**/*",
+      "node_modules/prebuild-install/**/*",
+      "dist/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "roms.db",
+        "to": "roms.db"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "requestedExecutionLevel": "asInvoker",
+      "sign": false,
+      "forceCodeSigning": false,
+      "certificateSubjectName": null,
+      "signingHashAlgorithms": null
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ROMS Restaurant"
+    }
   }
 }
