@@ -1,14 +1,17 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
-import { LogIn, UtensilsCrossed, Eye, EyeOff, AlertCircle, ChefHat, Users, Utensils } from 'lucide-react';
+import { LogIn, UtensilsCrossed, Eye, EyeOff, AlertCircle, ChefHat, Users, Utensils, Wifi, Search } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import axios from 'axios';
 
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [serverUrl, setServerUrl] = useState(localStorage.getItem('__roms_server_ip') || (window.location.origin.includes('localhost') ? '' : window.location.origin));
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const [showPass, setShowPass] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
@@ -17,6 +20,15 @@ export default function Login() {
     e.preventDefault();
     setLoading(true);
     setError('');
+
+    if (serverUrl) {
+      let finalUrl = serverUrl.trim();
+      if (!finalUrl.startsWith('http')) finalUrl = 'http://' + finalUrl;
+      if (!finalUrl.includes(':', 6) && finalUrl.split('.').length === 4) finalUrl = finalUrl + ':3000';
+      localStorage.setItem('__roms_server_ip', finalUrl);
+      axios.defaults.baseURL = finalUrl;
+    }
+
     try {
       await login(email, password);
       navigate('/');
@@ -25,6 +37,37 @@ export default function Login() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const autoScanNetwork = async () => {
+    setScanning(true);
+    setError('');
+    
+    // Most common Indian router subnets: 1.x, 0.x, 29.x(Jio), 100.x(Airtel) 
+    const subnets = ['192.168.1', '192.168.0', '192.168.29', '192.168.100', '10.0.0'];
+    let foundIp = '';
+
+    // Fast check: we test IP .2 to .50 to keep it incredibly fast (most DHCP assigns in this range)
+    for (const subnet of subnets) {
+      if (foundIp) break;
+      const promises = [];
+      for (let i = 2; i <= 50; i++) {
+        const ip = `http://${subnet}.${i}:3000`;
+        promises.push(
+          axios.get(`${ip}/api/menu`, { timeout: 1500 }).then(() => ip).catch(() => null)
+        );
+      }
+      const results = await Promise.all(promises);
+      foundIp = results.find(ip => ip !== null) || '';
+    }
+
+    if (foundIp) {
+      setServerUrl(foundIp);
+      setError(`Server found at ${foundIp}`);
+    } else {
+      setError('Could not auto-find server. Ensure both devices are on the same WiFi and the Main PC app is open.');
+    }
+    setScanning(false);
   };
 
   const quickFill = (u: string, p: string) => { setEmail(u); setPassword(p); };
@@ -139,6 +182,33 @@ export default function Login() {
                       className="absolute right-4 top-1/2 -translate-y-1/2 transition-colors"
                       style={{ color: 'rgba(255,255,255,0.3)' }}>
                       {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                ),
+              },
+              {
+                label: 'Server IP (If connecting remotely)',
+                node: (
+                  <div className="relative flex gap-2">
+                    <div className="relative flex-1">
+                      <input type="text" className="input-dark pr-12 w-full"
+                        placeholder="e.g. 192.168.1.5 (Leave blank if Main PC)" value={serverUrl} onChange={e => setServerUrl(e.target.value)} id="login-ip" />
+                      <div className="absolute right-4 top-1/2 -translate-y-1/2 transition-colors" style={{ color: 'rgba(255,255,255,0.3)' }}>
+                        <Wifi size={16} />
+                      </div>
+                    </div>
+                    <button 
+                      type="button" 
+                      onClick={autoScanNetwork}
+                      disabled={scanning}
+                      className="px-4 bg-[#1e293b] rounded-xl text-white font-bold transition hover:bg-[#334155] disabled:opacity-50 flex items-center justify-center shrink-0"
+                      title="Auto scan network for server"
+                    >
+                      {scanning ? (
+                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      ) : (
+                        <Search size={18} />
+                      )}
                     </button>
                   </div>
                 ),

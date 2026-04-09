@@ -1,5 +1,6 @@
 import { io } from 'socket.io-client';
 
-const socket = io(window.location.origin);
+const customUrl = localStorage.getItem('__roms_server_ip');
+const socket = io(customUrl || window.location.origin);
 
 export default socket;
