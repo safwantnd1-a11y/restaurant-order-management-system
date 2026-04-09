@@ -495,57 +495,64 @@ async function startServer() {
   });
 
   app.post('/api/orders', authenticate, (req: any, res: any) => {
-    const { table_id, items } = req.body;
+    try {
+      const { table_id, items } = req.body;
 
-    const transaction = db.transaction(() => {
-      // Calculate total_price on server to prevent tampering
-      let calculatedTotal = 0;
-      const menuItems = db.prepare('SELECT id, price, half_price FROM menu').all() as any[];
-      const menuMap = new Map(menuItems.map(m => [m.id, m]));
+      const transaction = db.transaction(() => {
+        // Calculate total_price on server to prevent tampering
+        let calculatedTotal = 0;
+        const menuItems = db.prepare('SELECT id, price, half_price FROM menu').all() as any[];
+        const menuMap = new Map(menuItems.map(m => [m.id, m]));
 
-      items.forEach((item: any) => {
-        const menuItem = menuMap.get(item.menu_id);
-        if (menuItem) {
-          const price = item.portion === 'half' ? (menuItem.half_price || menuItem.price / 2) : menuItem.price;
-          calculatedTotal += price * item.quantity;
-        }
+        items.forEach((item: any) => {
+          const menuItem = menuMap.get(item.menu_id);
+          if (menuItem) {
+            const price = item.portion === 'half' ? (menuItem.half_price || menuItem.price / 2) : menuItem.price;
+            calculatedTotal += price * item.quantity;
+          }
+        });
+
+        const insertOrder = db.prepare('INSERT INTO orders (table_id, waiter_id, total_price) VALUES (?, ?, ?)');
+        const orderResult = insertOrder.run(table_id, req.user.id, calculatedTotal);
+        const orderId = orderResult.lastInsertRowid;
+
+        const insertItem  = db.prepare("INSERT INTO order_items (order_id, menu_id, quantity, portion) VALUES (?, ?, ?, ?)");
+        const updateStock = db.prepare("UPDATE menu SET stock = MAX(0, stock - ?), out_of_stock = CASE WHEN MAX(0, stock - ?) <= 0 THEN 1 ELSE out_of_stock END WHERE id = ?");
+
+        items.forEach((item: any) => {
+          insertItem.run(orderId, item.menu_id, item.quantity, item.portion || 'full');
+          updateStock.run(item.quantity, item.quantity, item.menu_id);
+        });
+        return orderId;
       });
 
-      const insertOrder = db.prepare('INSERT INTO orders (table_id, waiter_id, total_price) VALUES (?, ?, ?)');
-      const orderResult = insertOrder.run(table_id, req.user.id, calculatedTotal);
-      const orderId = orderResult.lastInsertRowid;
+      const orderId = transaction();
+      // Fetch full order for socket broadcast
+      const fullOrder = db.prepare(`
+        SELECT o.*, t.table_number, u.name as waiter_name 
+        FROM orders o 
+        JOIN tables t ON o.table_id = t.id 
+        JOIN users u ON o.waiter_id = u.id
+        WHERE o.id = ?
+      `).get(orderId) as any;
+      
+      if (fullOrder) {
+        fullOrder.items = db.prepare(`
+          SELECT oi.*, m.name as item_name, m.price, m.is_veg, m.half_price 
+          FROM order_items oi 
+          JOIN menu m ON oi.menu_id = m.id 
+          WHERE oi.order_id = ?
+        `).all(orderId);
 
-      const insertItem  = db.prepare("INSERT INTO order_items (order_id, menu_id, quantity, portion) VALUES (?, ?, ?, ?)");
-      const updateStock = db.prepare("UPDATE menu SET stock = MAX(0, stock - ?), out_of_stock = CASE WHEN MAX(0, stock - ?) <= 0 THEN 1 ELSE out_of_stock END WHERE id = ?");
-
-      items.forEach((item: any) => {
-        insertItem.run(orderId, item.menu_id, item.quantity, item.portion || 'full');
-        updateStock.run(item.quantity, item.quantity, item.menu_id);
-      });
-      return orderId;
-    });
-
-    const orderId = transaction();
-    
-    // Fetch full order for socket broadcast
-    const fullOrder = db.prepare(`
-      SELECT o.*, t.table_number, u.name as waiter_name 
-      FROM orders o 
-      JOIN tables t ON o.table_id = t.id 
-      JOIN users u ON o.waiter_id = u.id
-      WHERE o.id = ?
-    `).get(orderId) as any;
-    
-    fullOrder.items = db.prepare(`
-      SELECT oi.*, m.name as item_name, m.price, m.is_veg, m.half_price 
-      FROM order_items oi 
-      JOIN menu m ON oi.menu_id = m.id 
-      WHERE oi.order_id = ?
-    `).all(orderId);
-
-    io.emit('new-order', fullOrder);
-    io.emit('stats-update');
-    res.json(fullOrder);
+        io.emit('new-order', fullOrder);
+      }
+      io.emit('stats-update');
+      res.json(fullOrder || { id: orderId, status: 'new' });
+    } catch (error: any) {
+      console.error('[API] Error placing order:', error);
+      require('fs').writeFileSync(require('path').join(process.cwd(), 'order-error.log'), error.stack || error.message);
+      res.status(500).json({ error: error.message });
+    }
   });
 
   app.put('/api/orders/:id/status', authenticate, (req: any, res: any) => {

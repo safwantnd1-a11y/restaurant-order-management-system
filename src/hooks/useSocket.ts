@@ -9,8 +9,9 @@ export const useSocket = () => {
 
   useEffect(() => {
     if (!user) return;
-
-    const newSocket = io();
+    
+    const customUrl = localStorage.getItem('__roms_server_ip');
+    const newSocket = io(customUrl || window.location.origin);
     setSocket(newSocket);
 
     newSocket.on('connect', () => {

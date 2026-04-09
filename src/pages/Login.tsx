@@ -31,7 +31,9 @@ export default function Login() {
 
     try {
       await login(email, password);
-      navigate('/');
+      // Use window.location.href instead of navigate to force a full reload.
+      // This ensures that the Socket.IO connection is initialized with the new IP address.
+      window.location.href = '/';
     } catch (err: any) {
       setError(err.response?.data?.error || 'Invalid credentials. Please try again.');
     } finally {

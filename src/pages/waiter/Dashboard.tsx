@@ -147,8 +147,9 @@ export default function WaiterDashboard() {
       setCartOpen(false);
       setView('orders');
       fetchData();
-    } catch {
-      alert('Failed to place order');
+    } catch (err: any) {
+      console.error(err);
+      alert('Failed to place order: ' + (err.response?.data?.error || err.message));
     } finally {
       setPlacingOrder(false);
     }
