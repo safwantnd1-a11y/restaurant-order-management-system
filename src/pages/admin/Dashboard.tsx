@@ -5,15 +5,17 @@ import {
   LayoutDashboard, Utensils, Users, ShoppingBag, CheckCircle2,
   LogOut, Plus, Trash2, Clock, Search, ChefHat, X, Wifi, Copy, Check,
   ToggleLeft, ToggleRight, Eye, EyeOff, MapPin, Settings,
-  RotateCcw, FileSpreadsheet, FileText, AlertTriangle
+  RotateCcw, FileSpreadsheet, FileText, AlertTriangle, BarChart3
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { motion, AnimatePresence } from 'motion/react';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import Analytics from './Analytics';
+import Customers from './Customers';
 
-type Tab = 'stats' | 'menu' | 'staff' | 'billing';
+type Tab = 'stats' | 'menu' | 'staff' | 'billing' | 'analytics' | 'customers';
 
 /* ---------- Animated Stat Card ---------- */
 function StatCard({ icon, label, value, color, delay = 0, onClick, onIconClick, iconAlt }: any) {
@@ -79,7 +81,7 @@ export default function AdminDashboard() {
   const [menuSearch, setMenuSearch] = useState('');
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
-  const [newItem, setNewItem] = useState({ name: '', category: 'Main', sub_category: '', type: 'veg', description: '', preparation_time: '0', is_veg: true, price: '', half_price: '' });
+  const [newItem, setNewItem] = useState({ name: '', category: 'Main', sub_category: '', type: 'veg', description: '', preparation_time: '0', is_veg: true, price: '', half_price: '', image_url: '' });
   const [selectedStat, setSelectedStat] = useState<string | null>(null);
   const [tables, setTables] = useState<any[]>([]);
   const [assignments, setAssignments] = useState<any[]>([]);
@@ -162,7 +164,7 @@ export default function AdminDashboard() {
       preparation_time: parseInt(newItem.preparation_time, 10),
       stock: 999,   // start as available
     });
-    setNewItem({ name: '', category: 'Main', sub_category: '', type: 'veg', description: '', preparation_time: '0', is_veg: true, price: '', half_price: '' });
+    setNewItem({ name: '', category: 'Main', sub_category: '', type: 'veg', description: '', preparation_time: '0', is_veg: true, price: '', half_price: '', image_url: '' });
     fetchMenu();
   };
 
@@ -341,10 +343,12 @@ export default function AdminDashboard() {
   });
 
   const navItems: { key: Tab; label: string; icon: React.ReactNode }[] = [
-    { key: 'stats', label: 'Dashboard', icon: <LayoutDashboard size={18} /> },
-    { key: 'billing', label: 'Billing', icon: <Copy size={18} /> },
-    { key: 'menu', label: 'Menu Management', icon: <Utensils size={18} /> },
-    { key: 'staff', label: 'Staff', icon: <Users size={18} /> },
+    { key: 'stats',     label: 'Dashboard',    icon: <LayoutDashboard size={18} /> },
+    { key: 'billing',   label: 'Billing',       icon: <Copy size={18} /> },
+    { key: 'menu',      label: 'Menu',          icon: <Utensils size={18} /> },
+    { key: 'staff',     label: 'Staff',         icon: <Users size={18} /> },
+    { key: 'customers', label: 'CRM',           icon: <Users size={18} /> },
+    { key: 'analytics', label: 'Analytics',     icon: <BarChart3 size={18} /> },
   ];
 
   const pendingBills = orders.filter(o => o.status === 'billing' || o.status === 'served');
@@ -753,6 +757,39 @@ export default function AdminDashboard() {
                       </div>
                     </motion.div>
 
+                    {/* Image Upload */}
+                    <motion.div initial={{ opacity: 0, x: -15 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.5 }}>
+                      <label className="block text-xs font-bold uppercase tracking-widest mb-2" style={{ color: 'rgba(255,255,255,0.3)' }}>Item Photo (optional)</label>
+                      <div className="relative">
+                        {newItem.image_url && (
+                          <div className="mb-2 relative">
+                            <img src={newItem.image_url} alt="preview" className="w-full h-32 object-cover rounded-2xl" />
+                            <button type="button" onClick={() => setNewItem({ ...newItem, image_url: '' })}
+                              className="absolute top-2 right-2 w-7 h-7 rounded-xl flex items-center justify-center"
+                              style={{ background: 'rgba(0,0,0,0.7)' }}>
+                              <X size={14} className="text-white" />
+                            </button>
+                          </div>
+                        )}
+                        <label className="flex items-center justify-center gap-2 py-3 rounded-2xl cursor-pointer font-semibold text-sm transition-all"
+                          style={{ background: 'rgba(249,115,22,0.08)', border: '1.5px dashed rgba(249,115,22,0.35)', color: '#f97316' }}
+                          htmlFor="menu-item-image">
+                          📷 {newItem.image_url ? 'Change Photo' : 'Upload Photo'}
+                          <input id="menu-item-image" type="file" accept="image/*" className="hidden"
+                            onChange={async (e) => {
+                              const file = e.target.files?.[0]; if (!file) return;
+                              const fd = new FormData(); fd.append('image', file);
+                              try {
+                                const r = await axios.post('/api/admin/upload-image', fd, {
+                                  headers: { Authorization: `Bearer ${localStorage.getItem('roms_token')}`, 'Content-Type': 'multipart/form-data' }
+                                });
+                                setNewItem({ ...newItem, image_url: r.data.url });
+                              } catch { alert('Upload failed'); }
+                            }} />
+                        </label>
+                      </div>
+                    </motion.div>
+
                     <motion.button type="submit" id="menu-item-submit"
                       className="w-full py-3.5 rounded-2xl font-bold text-white flex items-center justify-center gap-2"
                       style={{ background: 'linear-gradient(135deg, #f97316, #ea580c)', boxShadow: '0 4px 20px rgba(249,115,22,0.35)' }}
@@ -825,20 +862,26 @@ export default function AdminDashboard() {
                               style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}
                               whileHover={{ background: 'rgba(249,115,22,0.04)' }}>
                               <td className="px-5 py-4">
-                                <div className="flex items-center gap-2">
-                                  {/* Indian food indicator dot */}
-                                  <span title={item.is_veg ? 'Vegetarian' : 'Non-Vegetarian'}
-                                    style={{
-                                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                                      flexShrink: 0, width: 16, height: 16,
-                                      border: `1.5px solid ${item.is_veg ? '#22c55e' : '#ef4444'}`,
-                                      borderRadius: 3
-                                    }}>
-                                    <span style={{
-                                      width: 8, height: 8, borderRadius: '50%',
-                                      background: item.is_veg ? '#22c55e' : '#ef4444', display: 'block'
-                                    }} />
-                                  </span>
+                                <div className="flex items-center gap-3">
+                                  {/* Thumbnail */}
+                                  {item.image_url ? (
+                                    <img src={item.image_url} alt={item.name}
+                                      className="w-10 h-10 rounded-xl object-cover flex-shrink-0"
+                                      style={{ border: '1px solid rgba(255,255,255,0.08)' }} />
+                                  ) : (
+                                    <span title={item.is_veg ? 'Vegetarian' : 'Non-Vegetarian'}
+                                      style={{
+                                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                                        flexShrink: 0, width: 16, height: 16,
+                                        border: `1.5px solid ${item.is_veg ? '#22c55e' : '#ef4444'}`,
+                                        borderRadius: 3
+                                      }}>
+                                      <span style={{
+                                        width: 8, height: 8, borderRadius: '50%',
+                                        background: item.is_veg ? '#22c55e' : '#ef4444', display: 'block'
+                                      }} />
+                                    </span>
+                                  )}
                                   <div>
                                     <p className="font-semibold text-sm text-white">{item.name}</p>
                                     {item.description && <p className="text-xs mt-0.5 truncate max-w-[160px]" style={{ color: 'rgba(255,255,255,0.3)' }}>{item.description}</p>}
@@ -1161,6 +1204,26 @@ export default function AdminDashboard() {
 
             </motion.div>
           )}
+
+          {/* ===== ANALYTICS TAB ===== */}
+          {activeTab === 'analytics' && (
+            <motion.div key="analytics"
+              initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3 }}>
+              <Analytics />
+            </motion.div>
+          )}
+
+          {/* ===== CUSTOMERS TAB ===== */}
+          {activeTab === 'customers' && (
+            <motion.div key="customers"
+              initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3 }}>
+              <Customers />
+            </motion.div>
+          )}
+
+
         </AnimatePresence>
       </main>
 

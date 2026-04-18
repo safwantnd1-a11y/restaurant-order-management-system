@@ -164,24 +164,29 @@ export default function Login() {
             )}
           </AnimatePresence>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-5">
             {/* Fields stagger in */}
             {[
               {
                 label: 'Email or Username',
+                icon: <Users size={16} />,
                 node: (
-                  <input type="text" required className="input-dark" placeholder="admin / waiter@testy.com"
+                  <input type="text" required className="input-dark pl-11" placeholder="admin / waiter@testy.com"
                     value={email} onChange={e => setEmail(e.target.value)} id="login-email" />
                 ),
               },
               {
                 label: 'Password',
+                icon: <LogIn size={16} />,
                 node: (
                   <div className="relative">
-                    <input type={showPass ? 'text' : 'password'} required className="input-dark pr-12"
+                    <input type={showPass ? 'text' : 'password'} required className="input-dark pl-11 pr-12"
                       placeholder="••••••••" value={password} onChange={e => setPassword(e.target.value)} id="login-password" />
+                    <div className="absolute left-4 top-1/2 -translate-y-1/2 text-white/20">
+                      <LogIn size={16} />
+                    </div>
                     <button type="button" onClick={() => setShowPass(!showPass)}
-                      className="absolute right-4 top-1/2 -translate-y-1/2 transition-colors"
+                      className="absolute right-4 top-1/2 -translate-y-1/2 transition-colors hover:text-orange-400"
                       style={{ color: 'rgba(255,255,255,0.3)' }}>
                       {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
                     </button>
@@ -189,13 +194,14 @@ export default function Login() {
                 ),
               },
               {
-                label: 'Server IP (If connecting remotely)',
+                label: 'Server IP',
+                icon: <Wifi size={16} />,
                 node: (
                   <div className="relative flex gap-2">
                     <div className="relative flex-1">
-                      <input type="text" className="input-dark pr-12 w-full"
-                        placeholder="e.g. 192.168.1.5 (Leave blank if Main PC)" value={serverUrl} onChange={e => setServerUrl(e.target.value)} id="login-ip" />
-                      <div className="absolute right-4 top-1/2 -translate-y-1/2 transition-colors" style={{ color: 'rgba(255,255,255,0.3)' }}>
+                      <input type="text" className="input-dark pl-11 pr-4 w-full"
+                        placeholder="e.g. 192.168.1.5" value={serverUrl} onChange={e => setServerUrl(e.target.value)} id="login-ip" />
+                      <div className="absolute left-4 top-1/2 -translate-y-1/2 text-white/20">
                         <Wifi size={16} />
                       </div>
                     </div>
@@ -203,13 +209,12 @@ export default function Login() {
                       type="button" 
                       onClick={autoScanNetwork}
                       disabled={scanning}
-                      className="px-4 bg-[#1e293b] rounded-xl text-white font-bold transition hover:bg-[#334155] disabled:opacity-50 flex items-center justify-center shrink-0"
-                      title="Auto scan network for server"
+                      className="px-4 bg-white/5 border border-white/10 rounded-xl text-white font-bold transition hover:bg-orange-500/20 hover:border-orange-500/40 disabled:opacity-50 flex items-center justify-center shrink-0"
                     >
                       {scanning ? (
-                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        <div className="w-5 h-5 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
                       ) : (
-                        <Search size={18} />
+                        <Search size={18} className="text-orange-500" />
                       )}
                     </button>
                   </div>
@@ -219,32 +224,35 @@ export default function Login() {
               <motion.div key={field.label}
                 initial={{ opacity: 0, x: -20 }}
                 animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: 0.5 + i * 0.12, duration: 0.4 }}>
-                <label className="block text-xs font-semibold uppercase tracking-widest mb-2"
-                  style={{ color: 'rgba(255,255,255,0.4)' }}>{field.label}</label>
-                {field.node}
+                transition={{ delay: 0.5 + i * 0.1, duration: 0.4 }}>
+                <label className="block text-[10px] font-bold uppercase tracking-[0.2em] mb-2 ml-1"
+                  style={{ color: 'rgba(255,255,255,0.3)' }}>{field.label}</label>
+                <div className="relative">
+                  {i === 0 && <div className="absolute left-4 top-1/2 -translate-y-1/2 text-white/20">{field.icon}</div>}
+                  {field.node}
+                </div>
               </motion.div>
             ))}
 
             <motion.div
-              initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.76 }}>
+              initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.8 }}>
               <motion.button
                 type="submit"
                 disabled={loading}
                 id="login-submit"
-                className="w-full py-4 rounded-2xl font-bold text-white flex items-center justify-center gap-2 mt-2"
-                style={{ background: 'linear-gradient(135deg, #f97316, #ea580c)', boxShadow: '0 8px 30px rgba(249,115,22,0.4)' }}
-                whileHover={{ scale: 1.03, boxShadow: '0 12px 40px rgba(249,115,22,0.6)' }}
-                whileTap={{ scale: 0.97 }}
-                transition={{ type: 'spring', stiffness: 300, damping: 20 }}
+                className="w-full py-4 rounded-2xl font-black text-white flex items-center justify-center gap-3 mt-4 overflow-hidden relative group"
+                style={{ background: 'linear-gradient(135deg, #f97316, #ea580c)' }}
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
               >
+                <div className="absolute inset-0 bg-white/20 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700 skew-x-[-20deg]" />
                 {loading ? (
-                  <motion.div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full"
-                    animate={{ rotate: 360 }} transition={{ duration: 0.8, repeat: Infinity, ease: 'linear' }} />
-                ) : (<><LogIn size={18} /> Sign In</>)}
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : (<><LogIn size={20} /> <span className="tracking-wide uppercase text-sm">Sign In</span></>)}
               </motion.button>
             </motion.div>
           </form>
+
 
           {/* Quick Access */}
           <motion.div className="mt-6 pt-6" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}

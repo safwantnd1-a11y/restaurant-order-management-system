@@ -2,9 +2,15 @@ import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Login from './pages/Login';
+import WaiterLogin from './pages/WaiterLogin';
 import WaiterDashboard from './pages/waiter/Dashboard';
 import KitchenDashboard from './pages/kitchen/Dashboard';
 import AdminDashboard from './pages/admin/Dashboard';
+import QRMenu from './pages/customer/QRMenu';
+
+// ── Detect if this is a Waiter-only APK build ───────────────────────────────
+// Set VITE_APP_MODE=waiter in .env.waiter when building the APK
+const IS_WAITER_APP = import.meta.env.VITE_APP_MODE === 'waiter';
 
 interface EBProps { children: React.ReactNode; }
 interface EBState { hasError: boolean; }
@@ -29,22 +35,28 @@ class ErrorBoundary extends React.Component<EBProps, EBState> {
   }
 }
 
+// ── Protected route ──────────────────────────────────────────────────────────
 const ProtectedRoute = ({ children, roles }: { children: React.ReactNode, roles?: string[] }) => {
   const { user } = useAuth();
-  if (!user) return <Navigate to="/login" />;
+  const loginPath = IS_WAITER_APP ? '/waiter-login' : '/login';
+  if (!user) return <Navigate to={loginPath} />;
+  // In waiter-app mode: hard block any non-waiter role
+  if (IS_WAITER_APP && user.role !== 'waiter') return <Navigate to="/waiter-login" />;
   if (roles && !roles.includes(user.role)) return <Navigate to="/" />;
-
   return <ErrorBoundary>{children}</ErrorBoundary>;
 };
 
+// ── Role-based home ──────────────────────────────────────────────────────────
 const RoleBasedHome = () => {
   const { user } = useAuth();
-  
+  if (IS_WAITER_APP) {
+    return user?.role === 'waiter' ? <WaiterDashboard /> : <Navigate to="/waiter-login" />;
+  }
   switch (user?.role) {
-    case 'admin': return <AdminDashboard />;
-    case 'waiter': return <WaiterDashboard />;
+    case 'admin':   return <AdminDashboard />;
+    case 'waiter':  return <WaiterDashboard />;
     case 'kitchen': return <KitchenDashboard />;
-    default: return <Navigate to="/login" />;
+    default:        return <Navigate to="/login" />;
   }
 };
 
@@ -53,40 +65,26 @@ export default function App() {
     <AuthProvider>
       <BrowserRouter>
         <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route 
-            path="/" 
-            element={
-              <ProtectedRoute>
-                <RoleBasedHome />
-              </ProtectedRoute>
-            } 
-          />
-          {/* Explicit routes for direct access if needed */}
-          <Route 
-            path="/waiter" 
-            element={
-              <ProtectedRoute roles={['waiter', 'admin']}>
-                <WaiterDashboard />
-              </ProtectedRoute>
-            } 
-          />
-          <Route 
-            path="/kitchen" 
-            element={
-              <ProtectedRoute roles={['kitchen', 'admin']}>
-                <KitchenDashboard />
-              </ProtectedRoute>
-            } 
-          />
-          <Route 
-            path="/admin" 
-            element={
-              <ProtectedRoute roles={['admin']}>
-                <AdminDashboard />
-              </ProtectedRoute>
-            } 
-          />
+          {IS_WAITER_APP ? (
+            // ── Waiter-only APK mode ───────────────────────────────────────
+            <>
+              <Route path="/waiter-login" element={<WaiterLogin />} />
+              <Route path="/" element={<ProtectedRoute><RoleBasedHome /></ProtectedRoute>} />
+              <Route path="*" element={<Navigate to="/waiter-login" />} />
+            </>
+          ) : (
+            // ── Full Web App mode (Admin + Kitchen + Waiter) ───────────────
+            <>
+              <Route path="/login" element={<Login />} />
+              <Route path="/waiter-login" element={<WaiterLogin />} />
+              <Route path="/" element={<ProtectedRoute><RoleBasedHome /></ProtectedRoute>} />
+              <Route path="/waiter" element={<ProtectedRoute roles={['waiter', 'admin']}><WaiterDashboard /></ProtectedRoute>} />
+              <Route path="/kitchen" element={<ProtectedRoute roles={['kitchen', 'admin']}><KitchenDashboard /></ProtectedRoute>} />
+              <Route path="/admin" element={<ProtectedRoute roles={['admin']}><AdminDashboard /></ProtectedRoute>} />
+              {/* Public QR self-ordering — no auth required */}
+              <Route path="/qr/table/:tableNumber" element={<QRMenu />} />
+            </>
+          )}
         </Routes>
       </BrowserRouter>
     </AuthProvider>
