@@ -9,6 +9,9 @@ import Database from 'better-sqlite3';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
 import fs from 'fs';
+import { createRequire } from 'module';
+const _require = createRequire(import.meta.url);
+const XLSX = _require('xlsx') as typeof import('xlsx');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const db = new Database(process.env.DB_PATH || 'roms.db');
@@ -74,6 +77,10 @@ if (!orderItemColumns.includes('notes')) db.prepare("ALTER TABLE order_items ADD
 
 const ordersTableColumns = db.prepare('PRAGMA table_info(orders)').all().map((col: any) => col.name);
 if (!ordersTableColumns.includes('notes')) db.prepare("ALTER TABLE orders ADD COLUMN notes TEXT DEFAULT ''").run();
+if (!ordersTableColumns.includes('bill_number')) db.prepare("ALTER TABLE orders ADD COLUMN bill_number TEXT DEFAULT NULL").run();
+if (!ordersTableColumns.includes('paid_at')) db.prepare("ALTER TABLE orders ADD COLUMN paid_at DATETIME DEFAULT NULL").run();
+// Backfill: paid orders that have NULL paid_at → use created_at as fallback
+db.prepare("UPDATE orders SET paid_at = created_at WHERE status = 'paid' AND paid_at IS NULL").run();
 
 const userColumns = db.prepare('PRAGMA table_info(users)').all().map((col: any) => col.name);
 if (!userColumns.includes('login_count')) db.prepare('ALTER TABLE users ADD COLUMN login_count INTEGER DEFAULT 0').run();
@@ -587,7 +594,7 @@ async function startServer() {
 
     const ordersWithItems = orders.map(order => {
       const items = db.prepare(`
-        SELECT oi.*, m.name as item_name, m.price, m.is_veg, m.half_price 
+        SELECT oi.id as item_id, oi.*, m.name as item_name, m.price, m.is_veg, m.half_price 
         FROM order_items oi 
         JOIN menu m ON oi.menu_id = m.id 
         WHERE oi.order_id = ?
@@ -770,17 +777,164 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // ── Delete a single item from an order (admin) ──────────────────────────
+  // ── Mark Table Paid: generate bill number + save to Excel ───────────────
+  app.post('/api/admin/mark-paid', authenticate, async (req: any, res: any) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
+    try {
+      const { order_ids, table_number, waiter_name } = req.body;
+      if (!order_ids?.length) return res.status(400).json({ error: 'No order_ids provided' });
+
+      // ── Generate bill number: BILL-YYYYMMDD-NNN ────────────────────────
+      const today = new Date();
+      const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
+      const lastBill = db.prepare(
+        `SELECT bill_number FROM orders WHERE bill_number LIKE 'BILL-${dateStr}-%' ORDER BY bill_number DESC LIMIT 1`
+      ).get() as any;
+      let seq = 1;
+      if (lastBill?.bill_number) {
+        const parts = lastBill.bill_number.split('-');
+        seq = parseInt(parts[parts.length - 1]) + 1;
+      }
+      const billNumber = `BILL-${dateStr}-${String(seq).padStart(3, '0')}`;
+
+      // ── Fetch full order + items data (before marking paid) ─────────────
+      const orders = order_ids.map((oid: number) => {
+        const order = db.prepare(`SELECT o.*, t.table_number, u.name as waiter_name FROM orders o
+          JOIN tables t ON o.table_id = t.id
+          JOIN users u ON o.waiter_id = u.id WHERE o.id = ?`).get(oid) as any;
+        if (!order) return null;
+        const items = db.prepare(`SELECT oi.id as item_id, oi.*, m.name as item_name, m.price, m.half_price
+          FROM order_items oi JOIN menu m ON oi.menu_id = m.id WHERE oi.order_id = ?`).all(oid) as any[];
+        return { ...order, items };
+      }).filter(Boolean);
+
+      const grandTotal = orders.reduce((s: number, o: any) => s + (o.total_price || 0), 0);
+      const itemsSubtotal = orders.reduce((s: number, o: any) =>
+        s + (o.items || []).reduce((ss: number, item: any) => {
+          const p = item.portion === 'half' ? (item.half_price || item.price / 2) : item.price;
+          return ss + p * item.quantity;
+        }, 0), 0);
+      const discount = Math.max(0, Math.round((itemsSubtotal - grandTotal) * 100) / 100);
+
+      // ── Mark all orders as paid + set bill_number ──────────────────────
+      const paidAt = today.toISOString();
+      for (const oid of order_ids) {
+        db.prepare('UPDATE orders SET status = ?, bill_number = ?, paid_at = ? WHERE id = ?')
+          .run('paid', billNumber, paidAt, oid);
+      }
+
+      // ── Append to bills_log.xlsx ───────────────────────────────────────
+      const xlsxPath = path.join(__dirname, 'bills_log.xlsx');
+      let wb: any;
+      if (fs.existsSync(xlsxPath)) {
+        wb = XLSX.readFile(xlsxPath);
+      } else {
+        wb = XLSX.utils.book_new();
+      }
+      const wsName = 'Bills';
+      let ws = wb.Sheets[wsName];
+      const header = ['Bill No', 'Date', 'Time', 'Table', 'Waiter', 'Items', 'Subtotal (₹)', 'Discount (₹)', 'Total (₹)'];
+      const itemsSummary = orders.flatMap((o: any) =>
+        (o.items || []).map((i: any) => {
+          const p = i.portion === 'half' ? (i.half_price || i.price / 2) : i.price;
+          return `${i.item_name}${i.portion === 'half' ? '(½)' : ''} x${i.quantity} @₹${p}`;
+        })
+      ).join(', ');
+      const newRow = [
+        billNumber,
+        today.toLocaleDateString('en-IN'),
+        today.toLocaleTimeString('en-IN'),
+        table_number || (orders[0]?.table_number ?? ''),
+        waiter_name || (orders[0]?.waiter_name ?? ''),
+        itemsSummary,
+        itemsSubtotal.toFixed(2),
+        discount.toFixed(2),
+        grandTotal.toFixed(2),
+      ];
+      if (!ws) {
+        ws = XLSX.utils.aoa_to_sheet([header, newRow]);
+        XLSX.utils.book_append_sheet(wb, ws, wsName);
+      } else {
+        XLSX.utils.sheet_add_aoa(ws, [newRow], { origin: -1 });
+      }
+      XLSX.writeFile(wb, xlsxPath);
+      console.log(`[BILL] ${billNumber} saved → bills_log.xlsx`);
+
+      io.emit('order-status-updated', {});
+      io.emit('stats-update');
+      res.json({
+        success: true,
+        bill_number: billNumber,
+        grand_total: grandTotal,
+        items_subtotal: itemsSubtotal,
+        discount,
+        orders,
+        paid_at: paidAt,
+      });
+    } catch (e: any) {
+      console.error('[MARK-PAID ERROR]', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Bills Report: filtered paid bills for Excel download ──────────────────
+  app.get('/api/admin/bills-report', authenticate, (req: any, res: any) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
+    try {
+      const { from, to } = req.query;
+      let query = `
+        SELECT o.id, o.bill_number,
+               o.total_price, o.discount,
+               COALESCE(o.paid_at, o.created_at) as paid_at,
+               t.table_number, u.name as waiter_name,
+               GROUP_CONCAT(m.name || ' x' || oi.quantity, ', ') as items
+        FROM orders o
+        LEFT JOIN tables t ON o.table_id = t.id
+        LEFT JOIN users u ON o.waiter_id = u.id
+        LEFT JOIN order_items oi ON oi.order_id = o.id
+        LEFT JOIN menu m ON m.id = oi.menu_id
+        WHERE o.status = 'paid'
+      `;
+      const params: any[] = [];
+      if (from) { query += ` AND date(COALESCE(o.paid_at, o.created_at)) >= date(?)`; params.push(from); }
+      if (to)   { query += ` AND date(COALESCE(o.paid_at, o.created_at)) <= date(?)`; params.push(to); }
+      query += ` GROUP BY o.id ORDER BY paid_at DESC`;
+      const bills = db.prepare(query).all(...params) as any[];
+      res.json({ bills, total: bills.length });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Bills Reset: delete paid orders within date range ────────────────────
+  app.delete('/api/admin/bills-reset', authenticate, (req: any, res: any) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
+    try {
+      const { from, to } = req.query;
+      let query = `SELECT id FROM orders WHERE status = 'paid'`;
+      const params: any[] = [];
+      if (from) { query += ` AND date(paid_at) >= date(?)`; params.push(from); }
+      if (to)   { query += ` AND date(paid_at) <= date(?)`; params.push(to); }
+      const ids = (db.prepare(query).all(...params) as any[]).map((r: any) => r.id);
+      if (!ids.length) return res.json({ deleted: 0 });
+      const ph = ids.map(() => '?').join(',');
+      db.prepare(`DELETE FROM order_items WHERE order_id IN (${ph})`).run(...ids);
+      db.prepare(`DELETE FROM orders WHERE id IN (${ph})`).run(...ids);
+      io.emit('stats-update');
+      io.emit('order-status-updated', {});
+      res.json({ deleted: ids.length });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
   app.delete('/api/admin/order-items/:itemId', authenticate, (req: any, res: any) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
     try {
       const itemId = parseInt(req.params.itemId);
       // Get item details before deleting (to recalculate total)
       const item = db.prepare(`
-        SELECT oi.*, m.price, m.half_price FROM order_items oi
+        SELECT oi.id as item_id, oi.order_id, oi.quantity, oi.portion, m.price, m.half_price 
+        FROM order_items oi
         JOIN menu m ON oi.menu_id = m.id WHERE oi.id = ?
       `).get(itemId) as any;
-      if (!item) return res.status(404).json({ error: 'Item not found' });
+      if (!item) return res.status(404).json({ error: 'Item not found', itemId });
 
       const price = item.portion === 'half' ? (item.half_price || item.price / 2) : item.price;
       const itemTotal = price * item.quantity;
@@ -799,24 +953,40 @@ async function startServer() {
   app.put('/api/admin/orders/discount', authenticate, (req: any, res: any) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
     try {
-      const { order_ids, discount_type, discount_value } = req.body;
-      // discount_type: 'flat' | 'percent'
-      // discount_value: number
-      if (!order_ids?.length || !discount_value) return res.status(400).json({ error: 'Missing params' });
+      const { order_ids, discount_type } = req.body;
+      const discount_value = parseFloat(req.body.discount_value);
+      console.log('[DISCOUNT]', { order_ids, discount_type, discount_value });
+      if (!order_ids?.length || isNaN(discount_value) || discount_value <= 0)
+        return res.status(400).json({ error: 'Missing or invalid params', received: req.body });
 
-      for (const oid of order_ids) {
-        const order = db.prepare('SELECT total_price FROM orders WHERE id = ?').get(oid) as any;
-        if (!order) continue;
-        let disc = 0;
-        if (discount_type === 'percent') disc = (order.total_price * discount_value) / 100;
-        else disc = discount_value;
-        const newTotal = Math.max(0, order.total_price - disc / order_ids.length);
-        db.prepare('UPDATE orders SET total_price = ? WHERE id = ?').run(newTotal, oid);
+      // Calculate total of all orders first (for percent split)
+      const allOrders = order_ids.map((oid: number) =>
+        db.prepare('SELECT id, total_price FROM orders WHERE id = ?').get(oid) as any
+      ).filter(Boolean);
+
+      const grandTotal = allOrders.reduce((s: number, o: any) => s + o.total_price, 0);
+
+      for (const order of allOrders) {
+        let discForThisOrder = 0;
+        if (discount_type === 'percent') {
+          // Each order gets its proportional share of percent discount
+          discForThisOrder = order.total_price * discount_value / 100;
+        } else {
+          // Flat: split proportionally by order's share of grand total
+          const share = grandTotal > 0 ? order.total_price / grandTotal : 1 / allOrders.length;
+          discForThisOrder = discount_value * share;
+        }
+        const newTotal = Math.max(0, Math.round((order.total_price - discForThisOrder) * 100) / 100);
+        db.prepare('UPDATE orders SET total_price = ? WHERE id = ?').run(newTotal, order.id);
+        console.log(`[DISCOUNT] Order #${order.id}: ${order.total_price} → ${newTotal}`);
       }
       io.emit('stats-update');
       io.emit('order-status-updated', {});
       res.json({ success: true });
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { 
+      console.error('[DISCOUNT ERROR]', e.message);
+      res.status(500).json({ error: e.message }); 
+    }
   });
 
   // Reset all orders for new month (admin only)

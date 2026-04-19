@@ -116,7 +116,7 @@ export default function QRMenu() {
   };
 
   /* ── Item Card ───────────────────────────────────── */
-  const ItemCard = ({ item }: { item: any }) => {
+  const ItemCard = React.memo(function ItemCard({ item }: { item: any }) {
     const inCart  = cart.find(c => c.id === item.id);
     const liquid  = isLiquid(item);
     const accent  = liquid ? '#06b6d4' : item.is_veg ? '#22c55e' : '#ef4444';
@@ -206,7 +206,7 @@ export default function QRMenu() {
         </div>
       </motion.div>
     );
-  };
+  });
 
   /* ── Section Header ──────────────────────────────── */
   const SectionLabel = ({ emoji, label, color, count }: any) =>

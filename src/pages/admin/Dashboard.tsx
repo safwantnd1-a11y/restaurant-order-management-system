@@ -5,7 +5,8 @@ import {
   LayoutDashboard, Utensils, Users, ShoppingBag, CheckCircle2,
   LogOut, Plus, Trash2, Clock, Search, ChefHat, X, Wifi, Copy, Check,
   ToggleLeft, ToggleRight, Eye, EyeOff, MapPin, Settings,
-  RotateCcw, FileSpreadsheet, FileText, AlertTriangle, BarChart3, KeyRound, Printer
+  RotateCcw, FileSpreadsheet, FileText, AlertTriangle, BarChart3, KeyRound, Printer,
+  Download, CalendarRange, Trash
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { motion, AnimatePresence } from 'motion/react';
@@ -102,11 +103,18 @@ export default function AdminDashboard() {
   const [showCurPw, setShowCurPw] = useState(false);
   const [showNewPw, setShowNewPw] = useState(false);
 
-  // Edit Bill state
   const [editingGroup, setEditingGroup] = useState<any | null>(null);
   const [editDiscount, setEditDiscount] = useState({ type: 'flat' as 'flat'|'percent', value: '' });
   const [editSaving, setEditSaving] = useState(false);
   const [removingItemId, setRemovingItemId] = useState<number|null>(null);
+  const [previewGroup, setPreviewGroup] = useState<any | null>(null);
+  const [paidBill, setPaidBill] = useState<any | null>(null);
+  const [billingFilter, setBillingFilter] = useState({ from: '', to: '' });
+  const [billingResetting, setBillingResetting] = useState(false);
+  const [billingDownloading, setBillingDownloading] = useState(false);
+  const [resetConfirmBilling, setResetConfirmBilling] = useState(false);
+  const [paidBillsHistory, setPaidBillsHistory] = useState<any[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -137,7 +145,7 @@ export default function AdminDashboard() {
   };
 
   useEffect(() => {
-    fetchStats(); fetchMenu(); fetchOrders();
+    fetchStats(); fetchMenu(); fetchOrders(); fetchPaidBillsHistory();
     if (socket) {
       socket.on('stats-update', fetchStats);
       socket.on('menu-updated', fetchMenu);
@@ -157,6 +165,7 @@ export default function AdminDashboard() {
   }, [socket]);
 
   useEffect(() => { if (activeTab === 'staff') fetchStaff(); }, [activeTab]);
+  useEffect(() => { if (activeTab === 'billing') fetchPaidBillsHistory(); }, [activeTab]);
 
   const fetchStats = async () => {
     try { const r = await axios.get('/api/admin/stats'); setStats(r.data); } catch (e) { console.error('Stats fetch failed', e); }
@@ -254,12 +263,30 @@ export default function AdminDashboard() {
   };
 
   // Mark ALL orders for a table as paid in one click
-  const markTablePaid = async (tableId: number, orderIds: number[]) => {
-    if (payingId !== null) return;
-    setPayingId(tableId); // use tableId as the loading key
+  const fetchPaidBillsHistory = async () => {
+    setHistoryLoading(true);
     try {
-      await Promise.all(orderIds.map(id => axios.put(`/api/orders/${id}/status`, { status: 'paid' })));
+      const res = await axios.get('/api/admin/bills-report');
+      setPaidBillsHistory(res.data.bills || []);
+    } catch { /* silent */ } finally { setHistoryLoading(false); }
+  };
+
+  const markTablePaid = async (tableId: number, orderIds: number[], group: any) => {
+    if (payingId !== null) return;
+    setPayingId(tableId);
+    try {
+      const resp = await axios.post('/api/admin/mark-paid', {
+        order_ids: orderIds,
+        table_number: group.table_number,
+        waiter_name: group.waiter_name,
+      });
       await Promise.all([fetchOrders(), fetchStats()]);
+      // Show success modal with bill info
+      setPaidBill({
+        ...resp.data,
+        table_number: group.table_number,
+        waiter_name: group.waiter_name,
+      });
     } catch (error: any) {
       alert('Error marking as paid: ' + (error?.response?.data?.error || error.message));
     } finally {
@@ -655,7 +682,7 @@ export default function AdminDashboard() {
 
       {/* ===== MAIN ===== */}
       <main className="flex-1 overflow-y-auto p-8">
-        <AnimatePresence>
+        <AnimatePresence mode="wait">
 
           {/* STATS TAB */}
           {activeTab === 'stats' && (
@@ -803,18 +830,146 @@ export default function AdminDashboard() {
             <motion.div key="billing" className="space-y-6 max-w-6xl"
               initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.3 }}>
-              <div className="flex items-end justify-between flex-wrap gap-3">
-                <div>
-                  <h2 className="text-3xl font-black text-white">Billing & Payments</h2>
-                  <p className="mt-1 text-sm" style={{ color: 'rgba(255,255,255,0.35)' }}>
-                    {groupedBillsList.length > 0
-                      ? `${groupedBillsList.length} table${groupedBillsList.length > 1 ? 's' : ''} • ${pendingBills.length} order${pendingBills.length > 1 ? 's' : ''} combined into single bills`
-                      : 'All tables cleared'}
-                  </p>
+              {/* Billing title */}
+              <div>
+                <h2 className="text-3xl font-black text-white">Billing & Payments</h2>
+                <p className="mt-1 text-sm" style={{ color: 'rgba(255,255,255,0.35)' }}>
+                  {groupedBillsList.length > 0
+                    ? `${groupedBillsList.length} table${groupedBillsList.length > 1 ? 's' : ''} • ${pendingBills.length} order${pendingBills.length > 1 ? 's' : ''} pending`
+                    : 'All tables cleared'}
+                </p>
+              </div>
+
+              {/* ── Date filter + Download + Reset toolbar ── */}
+              <div className="flex flex-wrap items-end gap-3 p-4 rounded-2xl"
+                style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+
+                <div className="flex items-center gap-2 text-sm" style={{ color: 'rgba(255,255,255,0.4)' }}>
+                  <CalendarRange size={15} />
+                  <span className="font-bold text-xs uppercase tracking-widest">Filter by Date</span>
+                </div>
+
+                <div className="flex flex-wrap gap-2 flex-1">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-black uppercase tracking-widest" style={{ color: 'rgba(255,255,255,0.25)' }}>From</label>
+                    <input type="date" value={billingFilter.from}
+                      onChange={e => setBillingFilter(f => ({ ...f, from: e.target.value }))}
+                      className="px-3 py-2 rounded-xl text-sm font-semibold outline-none"
+                      style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: 'white', colorScheme: 'dark' }} />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-black uppercase tracking-widest" style={{ color: 'rgba(255,255,255,0.25)' }}>To</label>
+                    <input type="date" value={billingFilter.to}
+                      onChange={e => setBillingFilter(f => ({ ...f, to: e.target.value }))}
+                      className="px-3 py-2 rounded-xl text-sm font-semibold outline-none"
+                      style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: 'white', colorScheme: 'dark' }} />
+                  </div>
+                  {(billingFilter.from || billingFilter.to) && (
+                    <div className="flex items-end">
+                      <motion.button onClick={() => setBillingFilter({ from: '', to: '' })}
+                        className="px-3 py-2 rounded-xl text-xs font-bold"
+                        style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.4)' }}
+                        whileTap={{ scale: 0.95 }}>Clear</motion.button>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex gap-2 items-end">
+                  {/* Download Excel (CSV) */}
+                  <motion.button
+                    disabled={billingDownloading}
+                    onClick={async () => {
+                      setBillingDownloading(true);
+                      try {
+                        const params = new URLSearchParams();
+                        if (billingFilter.from) params.set('from', billingFilter.from);
+                        if (billingFilter.to) params.set('to', billingFilter.to);
+                        const res = await axios.get(`/api/admin/bills-report?${params}`);
+                        const bills: any[] = res.data.bills || [];
+                        if (!bills.length) { alert('No paid bills found for selected range.'); return; }
+                        const header = ['Bill No','Date','Time','Table','Waiter','Items','Subtotal (₹)','Discount (₹)','Total (₹)'];
+                        const rows = bills.map((b: any) => [
+                          b.bill_number || '-',
+                          b.paid_at ? new Date(b.paid_at).toLocaleDateString('en-IN') : '-',
+                          b.paid_at ? new Date(b.paid_at).toLocaleTimeString('en-IN') : '-',
+                          b.table_number || '-',
+                          b.waiter_name || '-',
+                          `"${(b.items || '-').replace(/"/g, "'")}"`,
+                          ((b.total_price || 0) + (b.discount || 0)).toFixed(2),
+                          (b.discount || 0).toFixed(2),
+                          b.total_price?.toFixed(2) ?? '0',
+                        ]);
+                        const csv = [header.join(','), ...rows.map((r: any[]) => r.join(','))].join('\n');
+                        const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        const label = (billingFilter.from || billingFilter.to)
+                          ? `${billingFilter.from || 'start'}_to_${billingFilter.to || 'today'}`
+                          : new Date().toISOString().slice(0,10);
+                        a.download = `bills_report_${label}.csv`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                        alert(`✅ Downloaded ${bills.length} bill records.`);
+                      } catch (e: any) {
+                        alert('Download failed: ' + (e.response?.data?.error || e.message));
+                      } finally { setBillingDownloading(false); }
+                    }}
+                    className="px-4 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2 text-white"
+                    style={{ background: 'linear-gradient(135deg,#22c55e,#16a34a)', boxShadow: '0 3px 14px rgba(34,197,94,0.3)', opacity: billingDownloading ? 0.6 : 1 }}
+                    whileHover={!billingDownloading ? { scale: 1.04 } : {}} whileTap={{ scale: 0.96 }}>
+                    {billingDownloading
+                      ? <motion.div className="w-4 h-4 rounded-full border-2 border-white border-t-transparent"
+                          animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 0.7, ease: 'linear' }} />
+                      : <Download size={15} />}
+                    Download CSV
+                  </motion.button>
+
+                  {/* Reset bills */}
+                  {!resetConfirmBilling ? (
+                    <motion.button onClick={() => setResetConfirmBilling(true)}
+                      className="px-4 py-2.5 rounded-xl font-bold text-sm flex items-center gap-2"
+                      style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)' }}
+                      whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.96 }}>
+                      <Trash size={14} /> Reset
+                    </motion.button>
+                  ) : (
+                    <div className="flex gap-2 items-center">
+                      <span className="text-xs font-bold" style={{ color: '#f87171' }}>Confirm delete?</span>
+                      <motion.button
+                        disabled={billingResetting}
+                        onClick={async () => {
+                          setBillingResetting(true);
+                          try {
+                            const params = new URLSearchParams();
+                            if (billingFilter.from) params.set('from', billingFilter.from);
+                            if (billingFilter.to) params.set('to', billingFilter.to);
+                            const res = await axios.delete(`/api/admin/bills-reset?${params}`);
+                            alert(`✅ Reset done — ${res.data.deleted} bill records deleted.`);
+                            fetchOrders(); fetchStats();
+                          } catch (e: any) {
+                            alert('Reset failed: ' + (e.response?.data?.error || e.message));
+                          } finally { setBillingResetting(false); setResetConfirmBilling(false); }
+                        }}
+                        className="px-4 py-2 rounded-xl font-bold text-xs text-white"
+                        style={{ background: 'linear-gradient(135deg,#ef4444,#dc2626)' }}
+                        whileTap={{ scale: 0.96 }}>
+                        {billingResetting ? '⏳' : 'Yes, Delete'}
+                      </motion.button>
+                      <motion.button onClick={() => setResetConfirmBilling(false)}
+                        className="px-3 py-2 rounded-xl font-bold text-xs"
+                        style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.4)' }}
+                        whileTap={{ scale: 0.96 }}>Cancel</motion.button>
+                    </div>
+                  )}
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {/* ── Two-column layout: Pending bills (left) + Paid history (right) ── */}
+              <div className="flex gap-6 items-start">
+                {/* LEFT: Pending bills grid */}
+                <div className="flex-1 min-w-0">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {groupedBillsList.length === 0 ? (
                   <div className="col-span-full py-16 text-center">
                     <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: 'spring' }}
@@ -906,104 +1061,14 @@ export default function AdminDashboard() {
                         }}
                         className="w-full py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 mb-3"
                         style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.6)', border: '1px solid rgba(255,255,255,0.08)' }}
-                        whileHover={{ background: 'rgba(255,255,255,0.09)', color: 'white' }}
+                        whileHover={{ background: 'rgba(255,255,255,0.09)', color: 'rgba(255,255,255,1)' }}
                         whileTap={{ scale: 0.97 }}>
                         <FileText size={15} /> Edit Bill
                       </motion.button>
 
-                      {/* Print Bill button */}
+                      {/* Bill Preview button */}
                       <motion.button
-                        onClick={() => {
-                          const w = window.open('', '_blank', 'width=320,height=600,scrollbars=yes');
-                          if (!w) return;
-                          const tableLabel = group.table_number.includes(' ') ? group.table_number : `Table ${group.table_number}`;
-                          const now = new Date().toLocaleString('en-IN');
-                          const itemRows = group.orders.map((order: any, oi: number) => {
-                            const orderHeader = group.orders.length > 1
-                              ? `<tr><td colspan="3" style="padding:5px 0 2px;font-size:9px;color:#888;text-transform:uppercase;letter-spacing:1px;border-top:1px dashed #ccc;">Order #${order.id}</td></tr>`
-                              : '';
-                            const rows = (order.items || []).map((item: any) => {
-                              const p = item.portion === 'half' ? (item.half_price || item.price / 2) : item.price;
-                              const sub = (p * item.quantity).toFixed(0);
-                              const name = item.item_name + (item.portion === 'half' ? ' (1/2)' : '');
-                              return `<tr>
-                                <td style="padding:3px 0;font-size:11px;word-break:break-word">${name}</td>
-                                <td style="text-align:center;font-size:11px;white-space:nowrap">${item.quantity}</td>
-                                <td style="text-align:right;font-size:11px;white-space:nowrap">Rs.${sub}</td>
-                              </tr>`;
-                            }).join('');
-                            return orderHeader + rows;
-                          }).join('');
-                          w.document.write(`<!DOCTYPE html>
-                            <html><head><title>Bill - ${tableLabel}</title>
-                            <meta charset="utf-8"/>
-                            <style>
-                              @page {
-                                size: 80mm auto;
-                                margin: 2mm 2mm 4mm 2mm;
-                              }
-                              * { box-sizing: border-box; margin: 0; padding: 0; }
-                              body {
-                                font-family: 'Courier New', Courier, monospace;
-                                font-size: 11px;
-                                width: 76mm;
-                                color: #000;
-                                background: #fff;
-                              }
-                              .center { text-align: center; }
-                              .rest-name { font-size: 15px; font-weight: bold; letter-spacing: 0.5px; margin-bottom: 2px; }
-                              .sub { font-size: 10px; color: #333; margin-top: 1px; }
-                              .divider { border: none; border-top: 1px dashed #555; margin: 5px 0; width: 100%; }
-                              table { width: 100%; border-collapse: collapse; }
-                              th {
-                                font-size: 9px; text-transform: uppercase; color: #333;
-                                padding: 3px 0; border-bottom: 1px solid #333; text-align: left;
-                              }
-                              th:nth-child(2) { text-align: center; }
-                              th:nth-child(3) { text-align: right; }
-                              td { padding: 2px 0; vertical-align: top; font-size: 11px; }
-                              .total-row td {
-                                font-weight: bold; font-size: 13px;
-                                padding-top: 5px; border-top: 2px solid #000;
-                              }
-                              .total-row td:last-child { text-align: right; }
-                              .footer { text-align: center; margin-top: 8px; font-size: 10px; color: #555; }
-                              @media print {
-                                body { width: 76mm; }
-                                button { display: none !important; }
-                              }
-                            </style></head>
-                            <body>
-                              <div class="center">
-                                <div class="rest-name">*** RESTAURANT ***</div>
-                                <div class="sub">${tableLabel} | Waiter: ${group.waiter_name}</div>
-                                <div class="sub">${now}</div>
-                              </div>
-                              <hr class="divider"/>
-                              <table>
-                                <thead>
-                                  <tr>
-                                    <th>Item</th>
-                                    <th style="text-align:center">Qty</th>
-                                    <th style="text-align:right">Amt</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  ${itemRows}
-                                  <tr><td colspan="3"><hr class="divider" style="margin:4px 0"/></td></tr>
-                                  <tr class="total-row">
-                                    <td colspan="2">TOTAL</td>
-                                    <td>Rs.${group.total.toFixed(0)}</td>
-                                  </tr>
-                                </tbody>
-                              </table>
-                              <hr class="divider"/>
-                              <div class="footer">Thank you! Please visit again :)</div>
-                              <script>window.onload=function(){window.print();window.onafterprint=function(){window.close();}}<\/script>
-                            </body></html>
-                          `);
-                          w.document.close();
-                        }}
+                        onClick={() => setPreviewGroup(group)}
                         className="w-full py-3.5 rounded-2xl font-bold text-white flex items-center justify-center gap-2 mb-3 relative overflow-hidden group"
                         style={{
                           background: 'linear-gradient(135deg,#f97316,#ea580c)',
@@ -1011,12 +1076,12 @@ export default function AdminDashboard() {
                         }}
                         whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}>
                         <div className="absolute inset-0 bg-white/10 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700 skew-x-[-20deg]" />
-                        <Printer size={18} /> Print Bill
+                        <FileText size={18} /> Bill Preview
                       </motion.button>
 
                       {/* Pay button */}
                       <motion.button
-                        onClick={() => markTablePaid(group.table_id, orderIds)}
+                        onClick={() => markTablePaid(group.table_id, orderIds, group)}
                         disabled={payingId !== null}
                         className="w-full py-4 rounded-2xl font-black text-white flex items-center justify-center gap-2 relative overflow-hidden group"
                         style={{
@@ -1039,7 +1104,88 @@ export default function AdminDashboard() {
                     </motion.div>
                   );
                 })}
-              </div>
+              </div>{/* end inner grid */}
+              </div>{/* end left column */}
+
+                {/* RIGHT: Paid Bills History Panel */}
+                <div className="w-80 flex-shrink-0 flex flex-col rounded-3xl overflow-hidden sticky top-4"
+                  style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', maxHeight: '80vh' }}>
+
+                  {/* Panel header */}
+                  <div className="px-5 py-4 flex items-center justify-between"
+                    style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                    <div>
+                      <p className="font-black text-white text-sm flex items-center gap-2">
+                        <FileSpreadsheet size={15} style={{ color: '#22c55e' }} />
+                        Paid Bills
+                      </p>
+                      <p className="text-[10px] mt-0.5" style={{ color: 'rgba(255,255,255,0.25)' }}>
+                        {paidBillsHistory.length} records
+                      </p>
+                    </div>
+                    <motion.button onClick={fetchPaidBillsHistory}
+                      className="w-7 h-7 rounded-xl flex items-center justify-center"
+                      style={{ background: 'rgba(255,255,255,0.05)' }}
+                      whileTap={{ rotate: 360 }} transition={{ duration: 0.4 }}>
+                      <RotateCcw size={12} style={{ color: 'rgba(255,255,255,0.4)' }} />
+                    </motion.button>
+                  </div>
+
+                  {/* List */}
+                  <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                    {historyLoading ? (
+                      <div className="flex items-center justify-center py-10">
+                        <motion.div className="w-6 h-6 rounded-full border-2 border-orange-500 border-t-transparent"
+                          animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 0.7, ease: 'linear' }} />
+                      </div>
+                    ) : paidBillsHistory.length === 0 ? (
+                      <div className="py-10 text-center">
+                        <p className="text-xs" style={{ color: 'rgba(255,255,255,0.2)' }}>No paid bills yet</p>
+                      </div>
+                    ) : paidBillsHistory.map((bill: any) => (
+                      <motion.div key={bill.id}
+                        className="p-3 rounded-2xl"
+                        style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}
+                        initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }}
+                        whileHover={{ background: 'rgba(255,255,255,0.06)' }}>
+
+                        {/* Bill number */}
+                        <p className="text-xs font-black tracking-wider mb-1"
+                          style={{ color: '#22c55e', fontFamily: 'monospace' }}>
+                          {bill.bill_number || `#${bill.id}`}
+                        </p>
+
+                        {/* Table + Waiter */}
+                        <p className="text-xs font-semibold text-white">
+                          {bill.table_number || 'Table ?'} &nbsp;·&nbsp;
+                          <span style={{ color: 'rgba(255,255,255,0.4)' }}>{bill.waiter_name || '-'}</span>
+                        </p>
+
+                        {/* Date */}
+                        <p className="text-[10px] mt-0.5" style={{ color: 'rgba(255,255,255,0.25)' }}>
+                          {bill.paid_at ? new Date(bill.paid_at).toLocaleString('en-IN', {
+                            day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
+                          }) : '-'}
+                        </p>
+
+                        {/* Amount */}
+                        <div className="flex items-center justify-between mt-1.5 pt-1.5"
+                          style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                          {bill.discount > 0 && (
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-lg"
+                              style={{ background: 'rgba(34,197,94,0.1)', color: '#4ade80' }}>
+                              -{bill.discount?.toFixed(0)} off
+                            </span>
+                          )}
+                          <span className="ml-auto text-sm font-black" style={{ color: '#f97316' }}>
+                            ₹{bill.total_price?.toFixed(0) ?? '0'}
+                          </span>
+                        </div>
+                      </motion.div>
+                    ))}
+                  </div>
+                </div>
+              </div>{/* end flex two-column */}
             </motion.div>
           )}
 
@@ -1087,9 +1233,9 @@ export default function AdminDashboard() {
                         {(order.items || []).map((item: any) => {
                           const p = item.portion === 'half' ? (item.half_price || item.price / 2) : item.price;
                           const sub = (p * item.quantity).toFixed(0);
-                          const isRemoving = removingItemId === item.id;
+                          const isRemoving = removingItemId === item.item_id;
                           return (
-                            <motion.div key={item.id} layout
+                            <motion.div key={item.item_id} layout
                               className="flex items-center gap-3 py-2 px-3 rounded-xl"
                               style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)' }}>
                               <div className="flex-1">
@@ -1103,9 +1249,9 @@ export default function AdminDashboard() {
                               <motion.button
                                 onClick={async () => {
                                   if (!window.confirm(`Remove "${item.item_name}" from bill?`)) return;
-                                  setRemovingItemId(item.id);
+                                  setRemovingItemId(item.item_id);
                                   try {
-                                    await axios.delete(`/api/admin/order-items/${item.id}`);
+                                    await axios.delete(`/api/admin/order-items/${item.item_id}`);
                                     // Update local state
                                     const priceDiff = p * item.quantity;
                                     setEditingGroup((prev: any) => {
@@ -1114,7 +1260,7 @@ export default function AdminDashboard() {
                                       clone.orders = clone.orders.map((o: any) => ({
                                         ...o,
                                         items: o.id === order.id
-                                          ? o.items.filter((i: any) => i.id !== item.id)
+                                          ? o.items.filter((i: any) => i.item_id !== item.item_id)
                                           : o.items,
                                         total_price: o.id === order.id ? Math.max(0, o.total_price - priceDiff) : o.total_price,
                                       }));
@@ -1171,16 +1317,21 @@ export default function AdminDashboard() {
                           setEditSaving(true);
                           try {
                             const orderIds = editingGroup.orders.map((o: any) => o.id);
-                            await axios.put('/api/admin/orders/discount', {
+                            console.log('[Discount] Sending:', { order_ids: orderIds, discount_type: editDiscount.type, discount_value: val });
+                            const resp = await axios.put('/api/admin/orders/discount', {
                               order_ids: orderIds,
                               discount_type: editDiscount.type,
                               discount_value: val,
                             });
+                            console.log('[Discount] Success:', resp.data);
                             setEditDiscount({ type: editDiscount.type, value: '' });
                             await Promise.all([fetchOrders(), fetchStats()]);
-                            // Refresh editingGroup total from fresh data
                             setEditingGroup(null);
-                          } catch (e: any) { alert('Failed: ' + e.message); }
+                          } catch (e: any) {
+                            const msg = e.response?.data?.error || e.message;
+                            console.error('[Discount] Error:', e.response?.data || e);
+                            alert('Discount failed: ' + msg);
+                          }
                           setEditSaving(false);
                         }}
                         disabled={!editDiscount.value || editSaving}
@@ -1210,6 +1361,297 @@ export default function AdminDashboard() {
                 </motion.div>
               </div>
             )}
+          </AnimatePresence>
+
+          {/* ═══ BILL PREVIEW MODAL ════════════════════════════════════════ */}
+          <style>{`
+            @media print {
+              body > * { display: none !important; }
+              #bill-print-area { display: block !important; }
+              @page { size: 80mm auto; margin: 2mm 2mm 4mm 2mm; }
+            }
+            #bill-print-area { display: none; }
+          `}</style>
+
+          <AnimatePresence>
+            {previewGroup && (() => {
+              const pg = previewGroup;
+              const tableLabel = pg.table_number.includes(' ') ? pg.table_number : `Table ${pg.table_number}`;
+              const now = new Date().toLocaleString('en-IN');
+              // Calculate items subtotal from raw item prices
+              const itemsSubtotal = pg.orders.reduce((acc: number, o: any) =>
+                acc + (o.items || []).reduce((s: number, item: any) => {
+                  const p = item.portion === 'half' ? (item.half_price || item.price / 2) : item.price;
+                  return s + p * item.quantity;
+                }, 0), 0);
+              const discount = Math.round((itemsSubtotal - pg.total) * 100) / 100;
+              const hasDiscount = discount > 0.01;
+
+              return (
+                <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+                  <motion.div className="fixed inset-0 bg-black/85 backdrop-blur-sm"
+                    initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                    onClick={() => setPreviewGroup(null)} />
+
+                  <motion.div className="relative w-full max-w-sm rounded-3xl overflow-hidden"
+                    style={{ background: '#111118', border: '1px solid rgba(255,255,255,0.1)' }}
+                    initial={{ scale: 0.88, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.88, opacity: 0 }}
+                    transition={{ type: 'spring', stiffness: 300, damping: 26 }}>
+
+                    {/* Modal header */}
+                    <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+                      <h3 className="font-black text-lg text-white flex items-center gap-2">
+                        <FileText size={17} style={{ color: '#f97316' }} /> Bill Preview
+                      </h3>
+                      <div className="flex items-center gap-2">
+                        <motion.button
+                          onClick={() => window.print()}
+                          className="px-4 py-2 rounded-xl font-bold text-sm flex items-center gap-2 text-white"
+                          style={{ background: 'linear-gradient(135deg,#f97316,#ea580c)', boxShadow: '0 3px 12px rgba(249,115,22,0.4)' }}
+                          whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+                          <Printer size={15} /> Print
+                        </motion.button>
+                        <motion.button onClick={() => setPreviewGroup(null)}
+                          className="w-8 h-8 rounded-xl flex items-center justify-center"
+                          style={{ background: 'rgba(255,255,255,0.06)' }}
+                          whileTap={{ scale: 0.9 }}>
+                          <X size={15} style={{ color: 'rgba(255,255,255,0.5)' }} />
+                        </motion.button>
+                      </div>
+                    </div>
+
+                    {/* Receipt preview */}
+                    <div className="p-5 overflow-y-auto max-h-[75vh]">
+                      {/* Thermal receipt style */}
+                      <div className="mx-auto"
+                        style={{ fontFamily: "'Courier New', Courier, monospace", fontSize: 12, color: '#111', background: '#fff', padding: '14px 12px', borderRadius: 8, maxWidth: 280 }}>
+
+                        {/* Header */}
+                        <div style={{ textAlign: 'center', marginBottom: 8 }}>
+                          <div style={{ fontSize: 15, fontWeight: 'bold', letterSpacing: 1 }}>*** RESTAURANT ***</div>
+                          <div style={{ fontSize: 10, color: '#444', marginTop: 2 }}>{tableLabel} | Waiter: {pg.waiter_name}</div>
+                          <div style={{ fontSize: 10, color: '#444' }}>{now}</div>
+                          {pg.bill_number && (
+                            <div style={{ fontSize: 10, fontWeight: 'bold', marginTop: 3, color: '#111' }}>
+                              Bill No: {pg.bill_number}
+                            </div>
+                          )}
+                        </div>
+
+                        <div style={{ borderTop: '1px dashed #888', margin: '6px 0' }} />
+
+                        {/* Items table */}
+                        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                          <thead>
+                            <tr style={{ borderBottom: '1px solid #333' }}>
+                              <th style={{ textAlign: 'left', fontSize: 9, textTransform: 'uppercase', padding: '2px 0', color: '#555' }}>Item</th>
+                              <th style={{ textAlign: 'center', fontSize: 9, textTransform: 'uppercase', padding: '2px 0', color: '#555' }}>Qty</th>
+                              <th style={{ textAlign: 'right', fontSize: 9, textTransform: 'uppercase', padding: '2px 0', color: '#555' }}>Amt</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {pg.orders.map((order: any, oi: number) => (
+                              <React.Fragment key={order.id}>
+                                {pg.orders.length > 1 && (
+                                  <tr><td colSpan={3} style={{ fontSize: 9, color: '#888', paddingTop: 5, textTransform: 'uppercase', letterSpacing: 1 }}>Order #{order.id}</td></tr>
+                                )}
+                                {(order.items || []).map((item: any, idx: number) => {
+                                  const p = item.portion === 'half' ? (item.half_price || item.price / 2) : item.price;
+                                  const sub = (p * item.quantity).toFixed(0);
+                                  return (
+                                    <tr key={idx}>
+                                      <td style={{ padding: '2px 0', fontSize: 11, wordBreak: 'break-word' }}>
+                                        {item.item_name}{item.portion === 'half' ? ' (½)' : ''}
+                                      </td>
+                                      <td style={{ textAlign: 'center', fontSize: 11 }}>{item.quantity}</td>
+                                      <td style={{ textAlign: 'right', fontSize: 11 }}>₹{sub}</td>
+                                    </tr>
+                                  );
+                                })}
+                              </React.Fragment>
+                            ))}
+                          </tbody>
+                        </table>
+
+                        <div style={{ borderTop: '1px dashed #888', margin: '5px 0' }} />
+
+                        {/* Subtotal + Discount + Total */}
+                        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                          <tbody>
+                            {hasDiscount && (
+                              <>
+                                <tr>
+                                  <td style={{ fontSize: 11, padding: '1px 0' }}>Subtotal</td>
+                                  <td style={{ textAlign: 'right', fontSize: 11 }}>₹{itemsSubtotal.toFixed(0)}</td>
+                                </tr>
+                                <tr>
+                                  <td style={{ fontSize: 11, padding: '1px 0', color: '#16a34a', fontWeight: 'bold' }}>Discount</td>
+                                  <td style={{ textAlign: 'right', fontSize: 11, color: '#16a34a', fontWeight: 'bold' }}>- ₹{discount.toFixed(0)}</td>
+                                </tr>
+                              </>
+                            )}
+                            <tr style={{ borderTop: '2px solid #111' }}>
+                              <td style={{ fontWeight: 'bold', fontSize: 13, paddingTop: 4 }}>TOTAL</td>
+                              <td style={{ textAlign: 'right', fontWeight: 'bold', fontSize: 13, paddingTop: 4 }}>₹{pg.total.toFixed(0)}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+
+                        <div style={{ borderTop: '1px dashed #888', margin: '6px 0' }} />
+                        <div style={{ textAlign: 'center', fontSize: 10, color: '#666' }}>Thank you! Please visit again :)</div>
+                      </div>
+                    </div>
+                  </motion.div>
+                </div>
+              );
+            })()}
+          </AnimatePresence>
+
+          {/* Hidden print area — cloned into DOM for @media print */}
+          {previewGroup && (() => {
+            const pg = previewGroup;
+            const tableLabel = pg.table_number.includes(' ') ? pg.table_number : `Table ${pg.table_number}`;
+            const now = new Date().toLocaleString('en-IN');
+            const itemsSubtotal = pg.orders.reduce((acc: number, o: any) =>
+              acc + (o.items || []).reduce((s: number, item: any) => {
+                const p = item.portion === 'half' ? (item.half_price || item.price / 2) : item.price;
+                return s + p * item.quantity;
+              }, 0), 0);
+            const discount = Math.round((itemsSubtotal - pg.total) * 100) / 100;
+            const hasDiscount = discount > 0.01;
+            return (
+              <div id="bill-print-area" style={{ fontFamily: "'Courier New', Courier, monospace", fontSize: 11, width: '76mm', color: '#000', background: '#fff', padding: 4 }}>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: 15, fontWeight: 'bold' }}>*** RESTAURANT ***</div>
+                  <div style={{ fontSize: 10 }}>{tableLabel} | Waiter: {pg.waiter_name}</div>
+                  <div style={{ fontSize: 10 }}>{now}</div>
+                </div>
+                <div style={{ borderTop: '1px dashed #555', margin: '4px 0' }} />
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid #333' }}>
+                      <th style={{ textAlign: 'left', fontSize: 9, textTransform: 'uppercase' }}>Item</th>
+                      <th style={{ textAlign: 'center', fontSize: 9 }}>Qty</th>
+                      <th style={{ textAlign: 'right', fontSize: 9 }}>Amt</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pg.orders.map((order: any, oi: number) => (
+                      <React.Fragment key={order.id}>
+                        {pg.orders.length > 1 && <tr><td colSpan={3} style={{ fontSize: 9, color: '#888' }}>Order #{order.id}</td></tr>}
+                        {(order.items || []).map((item: any, idx: number) => {
+                          const p = item.portion === 'half' ? (item.half_price || item.price / 2) : item.price;
+                          return <tr key={idx}><td style={{ fontSize: 11 }}>{item.item_name}{item.portion === 'half' ? ' (½)' : ''}</td><td style={{ textAlign: 'center', fontSize: 11 }}>{item.quantity}</td><td style={{ textAlign: 'right', fontSize: 11 }}>Rs.{(p * item.quantity).toFixed(0)}</td></tr>;
+                        })}
+                      </React.Fragment>
+                    ))}
+                  </tbody>
+                </table>
+                <div style={{ borderTop: '1px dashed #555', margin: '4px 0' }} />
+                {hasDiscount && <>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}><span>Subtotal</span><span>Rs.{itemsSubtotal.toFixed(0)}</span></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, fontWeight: 'bold' }}><span>Discount</span><span>-Rs.{discount.toFixed(0)}</span></div>
+                </>}
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: 13, borderTop: '2px solid #000', paddingTop: 3 }}><span>TOTAL</span><span>Rs.{pg.total.toFixed(0)}</span></div>
+                <div style={{ borderTop: '1px dashed #555', margin: '4px 0' }} />
+                <div style={{ textAlign: 'center', fontSize: 10 }}>Thank you! Please visit again :)</div>
+              </div>
+            );
+          })()}
+
+          {/* ═══ PAID SUCCESS MODAL ════════════════════════════════════════ */}
+          <AnimatePresence>
+            {paidBill && (() => {
+              const pb = paidBill;
+              const tableLabel = pb.table_number?.includes(' ') ? pb.table_number : `Table ${pb.table_number}`;
+              const hasDiscount = pb.discount > 0.01;
+              const now = new Date(pb.paid_at).toLocaleString('en-IN');
+              return (
+                <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
+                  <motion.div className="fixed inset-0 bg-black/90 backdrop-blur-sm"
+                    initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} />
+
+                  <motion.div className="relative w-full max-w-sm rounded-3xl overflow-hidden"
+                    style={{ background: '#111118', border: '1px solid rgba(34,197,94,0.3)', boxShadow: '0 0 60px rgba(34,197,94,0.15)' }}
+                    initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.8, opacity: 0 }}
+                    transition={{ type: 'spring', stiffness: 280, damping: 24 }}>
+
+                    {/* Success Header */}
+                    <div className="px-6 pt-8 pb-5 text-center">
+                      <motion.div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"
+                        style={{ background: 'linear-gradient(135deg,#22c55e,#16a34a)', boxShadow: '0 0 30px rgba(34,197,94,0.4)' }}
+                        initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 0.1, type: 'spring' }}>
+                        <CheckCircle2 size={32} className="text-white" />
+                      </motion.div>
+                      <h3 className="text-2xl font-black text-white">Bill Generated!</h3>
+                      <p className="text-xs mt-1" style={{ color: 'rgba(255,255,255,0.35)' }}>{tableLabel} • {pb.waiter_name} • {now}</p>
+
+                      {/* Bill Number */}
+                      <motion.div className="mt-4 px-5 py-3 rounded-2xl"
+                        style={{ background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.2)' }}
+                        initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
+                        <p className="text-[10px] font-black uppercase tracking-widest mb-1" style={{ color: 'rgba(255,255,255,0.3)' }}>Bill Number</p>
+                        <p className="text-xl font-black tracking-wider" style={{ color: '#22c55e', fontFamily: 'monospace' }}>{pb.bill_number}</p>
+                      </motion.div>
+
+                      {/* Amounts */}
+                      <div className="mt-4 space-y-1.5">
+                        {hasDiscount && (
+                          <>
+                            <div className="flex justify-between text-sm px-2">
+                              <span style={{ color: 'rgba(255,255,255,0.4)' }}>Subtotal</span>
+                              <span style={{ color: 'rgba(255,255,255,0.6)' }}>₹{pb.items_subtotal?.toFixed(0)}</span>
+                            </div>
+                            <div className="flex justify-between text-sm px-2">
+                              <span style={{ color: '#4ade80' }}>Discount Applied</span>
+                              <span style={{ color: '#4ade80' }}>- ₹{pb.discount?.toFixed(0)}</span>
+                            </div>
+                          </>
+                        )}
+                        <div className="flex justify-between items-center px-2 pt-2" style={{ borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+                          <span className="font-black text-white">TOTAL PAID</span>
+                          <span className="text-2xl font-black" style={{ color: '#f97316' }}>₹{pb.grand_total?.toFixed(0)}</span>
+                        </div>
+                      </div>
+
+                      {/* Excel saved badge */}
+                      <div className="mt-3 flex items-center justify-center gap-2 text-xs py-2 px-4 rounded-xl"
+                        style={{ background: 'rgba(255,255,255,0.04)', color: 'rgba(255,255,255,0.3)' }}>
+                        <FileSpreadsheet size={13} />
+                        Saved to bills_log.xlsx
+                      </div>
+                    </div>
+
+                    {/* Action buttons */}
+                    <div className="px-6 pb-6 flex gap-3">
+                      <motion.button
+                        onClick={() => {
+                          // Set preview group from paidBill data for printing
+                          setPreviewGroup({
+                            table_number: pb.table_number,
+                            waiter_name: pb.waiter_name,
+                            total: pb.grand_total,
+                            orders: pb.orders,
+                            bill_number: pb.bill_number,
+                          });
+                          setPaidBill(null);
+                        }}
+                        className="flex-1 py-3 rounded-2xl font-bold text-white flex items-center justify-center gap-2"
+                        style={{ background: 'linear-gradient(135deg,#f97316,#ea580c)', boxShadow: '0 4px 14px rgba(249,115,22,0.35)' }}
+                        whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}>
+                        <Printer size={16} /> Print Bill
+                      </motion.button>
+                      <motion.button onClick={() => setPaidBill(null)}
+                        className="px-5 py-3 rounded-2xl font-bold"
+                        style={{ background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.5)' }}
+                        whileHover={{ background: 'rgba(255,255,255,0.1)' }} whileTap={{ scale: 0.97 }}>
+                        Close
+                      </motion.button>
+                    </div>
+                  </motion.div>
+                </div>
+              );
+            })()}
           </AnimatePresence>
 
           {/* MENU TAB */}
@@ -1997,3 +2439,4 @@ export default function AdminDashboard() {
     </div>
   );
 }
+
