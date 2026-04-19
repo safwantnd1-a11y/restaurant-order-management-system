@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
-import { LogIn, UtensilsCrossed, Eye, EyeOff, AlertCircle, ChefHat, Users, Utensils, Wifi, Search } from 'lucide-react';
+import { LogIn, UtensilsCrossed, Eye, EyeOff, AlertCircle, Users, Wifi, Search } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import axios from 'axios';
 
@@ -72,7 +72,6 @@ export default function Login() {
     setScanning(false);
   };
 
-  const quickFill = (u: string, p: string) => { setEmail(u); setPassword(p); };
 
   const orbVariants = {
     animate: (i: number) => ({
@@ -254,42 +253,7 @@ export default function Login() {
           </form>
 
 
-          {/* Quick Access */}
-          <motion.div className="mt-6 pt-6" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.9 }}>
-            <p className="text-xs font-semibold uppercase tracking-widest text-center mb-4"
-              style={{ color: 'rgba(255,255,255,0.25)' }}>Quick Demo Access</p>
-            <div className="grid grid-cols-3 gap-2">
-              {[
-                { label: 'Admin',   icon: <Utensils size={14} />, user: 'admin',            pass: 'admin',       r: '249,115,22' },
-                { label: 'Waiter',  icon: <Users size={14} />,    user: 'waiter@testy.com',  pass: 'password123', r: '6,182,212'  },
-                { label: 'Kitchen', icon: <ChefHat size={14} />,  user: 'kitchen@testy.com', pass: 'password123', r: '139,92,246' },
-              ].map((item, i) => (
-                <motion.button
-                  key={item.label}
-                  type="button"
-                  onClick={() => quickFill(item.user, item.pass)}
-                  className="flex flex-col items-center gap-1.5 py-3 px-2 rounded-xl text-xs font-semibold"
-                  style={{
-                    background:  `rgba(${item.r},0.08)`,
-                    border:      `1px solid rgba(${item.r},0.2)`,
-                    color:       `rgb(${item.r})`,
-                  }}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.95 + i * 0.1 }}
-                  whileHover={{ scale: 1.06, background: `rgba(${item.r},0.18)` }}
-                  whileTap={{ scale: 0.93 }}
-                >
-                  {item.icon}
-                  {item.label}
-                </motion.button>
-              ))}
-            </div>
-            <p className="text-center text-xs mt-3" style={{ color: 'rgba(255,255,255,0.2)' }}>
-              Click a role to auto-fill credentials
-            </p>
-          </motion.div>
+
         </motion.div>
       </div>
     </div>

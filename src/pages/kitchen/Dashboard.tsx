@@ -53,11 +53,18 @@ export default function KitchenDashboard() {
   };
 
   const fetchOrders = async () => {
-    const res = await axios.get('/api/orders');
-    const data = res.data;
-    if (data.length > prevOrderCount.current && prevOrderCount.current > 0) triggerAlert();
-    prevOrderCount.current = data.length;
-    setOrders(data);
+    try {
+      // Always send token so server returns kitchen-filtered orders correctly
+      const tok = localStorage.getItem('roms_token') || localStorage.getItem('token');
+      if (tok) axios.defaults.headers.common['Authorization'] = `Bearer ${tok}`;
+      const res = await axios.get('/api/orders');
+      const data = Array.isArray(res.data) ? res.data : [];
+      if (data.length > prevOrderCount.current && prevOrderCount.current > 0) triggerAlert();
+      prevOrderCount.current = data.length;
+      setOrders(data);
+    } catch (e) {
+      console.error('[Kitchen] fetchOrders failed:', e);
+    }
   };
 
   const fetchMenu = async () => {
@@ -82,7 +89,8 @@ export default function KitchenDashboard() {
     fetchMenu();
   };
 
-  const activeOrders = orders.filter(o => o.status !== 'served');
+  // Kitchen only shows new / preparing / ready
+  const activeOrders = orders.filter(o => ['new', 'preparing', 'ready'].includes(o.status));
   const filteredMenu = menu.filter(item =>
     item.name.toLowerCase().includes(menuSearch.toLowerCase()) ||
     (item.category || '').toLowerCase().includes(menuSearch.toLowerCase())
@@ -253,10 +261,24 @@ export default function KitchenDashboard() {
                         </div>
                       </div>
 
-                      {/* Waiter info */}
+                      {/* Waiter + Extra Items indicator */}
                       <div className="px-4 pt-3 pb-2 text-xs" style={{ color: 'rgba(255,255,255,0.4)', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
                         <span style={{ color: 'rgba(255,255,255,0.25)' }}>Waiter: </span>{order.waiter_name || 'N/A'}
                       </div>
+
+                      {/* EXTRA ITEMS banner — shown when items were added to a previously served order */}
+                      {order.status === 'new' && order.notes?.includes('[EXTRA]') === false && order.items?.length > 0 && (() => {
+                        // Heuristic: if the order was re-opened (created_at is old), show extra badge
+                        const ageMin = Math.floor((Date.now() - new Date(order.created_at).getTime()) / 60000);
+                        return ageMin >= 5 ? (
+                          <motion.div
+                            className="mx-4 mb-1 py-1.5 px-3 rounded-xl text-xs font-black text-center"
+                            style={{ background: 'rgba(249,115,22,0.2)', color: '#f97316', border: '1px solid rgba(249,115,22,0.4)' }}
+                            animate={{ opacity: [0.7, 1, 0.7] }} transition={{ duration: 1, repeat: Infinity }}>
+                            ➕ EXTRA ITEMS ADDED — Same Table
+                          </motion.div>
+                        ) : null;
+                      })()}
 
                       {/* Items */}
                       <div className="px-4 py-3">

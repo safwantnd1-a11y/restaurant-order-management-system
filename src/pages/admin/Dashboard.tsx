@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Utensils, Users, ShoppingBag, CheckCircle2,
   LogOut, Plus, Trash2, Clock, Search, ChefHat, X, Wifi, Copy, Check,
   ToggleLeft, ToggleRight, Eye, EyeOff, MapPin, Settings,
-  RotateCcw, FileSpreadsheet, FileText, AlertTriangle, BarChart3
+  RotateCcw, FileSpreadsheet, FileText, AlertTriangle, BarChart3, KeyRound, Printer
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { motion, AnimatePresence } from 'motion/react';
@@ -94,6 +94,47 @@ export default function AdminDashboard() {
   const [resetting, setResetting] = useState(false);
   const [exporting, setExporting] = useState<'excel' | 'pdf' | null>(null);
   const [payingId, setPayingId] = useState<number | null>(null);
+  const [showChangePw, setShowChangePw] = useState(false);
+  const [changePwForm, setChangePwForm] = useState({ current: '', next: '', confirm: '' });
+  const [changePwError, setChangePwError] = useState('');
+  const [changePwSuccess, setChangePwSuccess] = useState(false);
+  const [changePwLoading, setChangePwLoading] = useState(false);
+  const [showCurPw, setShowCurPw] = useState(false);
+  const [showNewPw, setShowNewPw] = useState(false);
+
+  // Edit Bill state
+  const [editingGroup, setEditingGroup] = useState<any | null>(null);
+  const [editDiscount, setEditDiscount] = useState({ type: 'flat' as 'flat'|'percent', value: '' });
+  const [editSaving, setEditSaving] = useState(false);
+  const [removingItemId, setRemovingItemId] = useState<number|null>(null);
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setChangePwError('');
+    setChangePwSuccess(false);
+    if (changePwForm.next !== changePwForm.confirm) {
+      setChangePwError('New passwords do not match');
+      return;
+    }
+    if (changePwForm.next.length < 4) {
+      setChangePwError('New password must be at least 4 characters');
+      return;
+    }
+    setChangePwLoading(true);
+    try {
+      await axios.put('/api/auth/change-password', {
+        currentPassword: changePwForm.current,
+        newPassword: changePwForm.next,
+      });
+      setChangePwSuccess(true);
+      setChangePwForm({ current: '', next: '', confirm: '' });
+      setTimeout(() => { setShowChangePw(false); setChangePwSuccess(false); }, 1800);
+    } catch (err: any) {
+      setChangePwError(err.response?.data?.error || 'Failed to change password');
+    } finally {
+      setChangePwLoading(false);
+    }
+  };
 
   useEffect(() => {
     fetchStats(); fetchMenu(); fetchOrders();
@@ -212,12 +253,12 @@ export default function AdminDashboard() {
     setCopiedId(id); setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const markOrderPaid = async (orderId: number) => {
-    if (payingId !== null) return; // prevent double-click
-    setPayingId(orderId);
+  // Mark ALL orders for a table as paid in one click
+  const markTablePaid = async (tableId: number, orderIds: number[]) => {
+    if (payingId !== null) return;
+    setPayingId(tableId); // use tableId as the loading key
     try {
-      await axios.put(`/api/orders/${orderId}/status`, { status: 'paid' });
-      // Always refresh — don't gate on res.data.success
+      await Promise.all(orderIds.map(id => axios.put(`/api/orders/${id}/status`, { status: 'paid' })));
       await Promise.all([fetchOrders(), fetchStats()]);
     } catch (error: any) {
       alert('Error marking as paid: ' + (error?.response?.data?.error || error.message));
@@ -353,6 +394,28 @@ export default function AdminDashboard() {
 
   const pendingBills = orders.filter(o => o.status === 'billing' || o.status === 'served');
 
+  // Group pending bills by table — one combined bill card per table
+  const groupedBills = pendingBills.reduce((acc: Record<number, any>, order) => {
+    const tid = order.table_id;
+    if (!acc[tid]) {
+      acc[tid] = {
+        table_id: tid,
+        table_number: order.table_number,
+        waiter_name: order.waiter_name,
+        orders: [],
+        allItems: [],
+        total: 0,
+        hasBillingRequest: false,
+      };
+    }
+    acc[tid].orders.push(order);
+    acc[tid].allItems.push(...(order.items || []));
+    acc[tid].total += order.total_price || 0;
+    if (order.status === 'billing') acc[tid].hasBillingRequest = true;
+    return acc;
+  }, {});
+  const groupedBillsList = Object.values(groupedBills);
+
   return (
     <div className="min-h-screen flex" style={{ background: '#0a0a0f', color: 'white' }}>
       {/* ===== SIDEBAR ===== */}
@@ -420,11 +483,11 @@ export default function AdminDashboard() {
                 : { color: 'rgba(255,255,255,0.4)' }}>
               {item.icon}
               {item.label}
-              {item.key === 'billing' && pendingBills.length > 0 && (
+              {item.key === 'billing' && groupedBillsList.length > 0 && (
                 <motion.span className="ml-auto text-xs font-bold px-2 py-0.5 rounded-full"
                   initial={{ scale: 1.4 }} animate={{ scale: 1 }}
                   style={{ background: 'rgba(6,182,212,0.2)', color: '#06b6d4' }}>
-                  {pendingBills.length}
+                  {groupedBillsList.length}
                 </motion.span>
               )}
               {item.key === 'menu' && (
@@ -457,6 +520,13 @@ export default function AdminDashboard() {
               </div>
             </div>
           </div>
+          <motion.button onClick={() => { setShowChangePw(true); setChangePwError(''); setChangePwSuccess(false); }} whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.96 }}
+            className="w-full flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors mb-1"
+            style={{ color: 'rgba(255,255,255,0.35)' }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(249,115,22,0.1)'; (e.currentTarget as HTMLElement).style.color = '#f97316'; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; (e.currentTarget as HTMLElement).style.color = 'rgba(255,255,255,0.35)'; }}>
+            <KeyRound size={16} /> Change Password
+          </motion.button>
           <motion.button onClick={logout} whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.96 }}
             className="w-full flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors"
             style={{ color: 'rgba(255,255,255,0.35)' }}
@@ -466,6 +536,122 @@ export default function AdminDashboard() {
           </motion.button>
         </div>
       </motion.aside>
+
+      {/* ===== CHANGE PASSWORD MODAL ===== */}
+      <AnimatePresence>
+        {showChangePw && (
+          <motion.div
+            className="fixed inset-0 z-50 flex items-center justify-center"
+            style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(8px)' }}
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => setShowChangePw(false)}
+          >
+            <motion.div
+              className="relative w-full max-w-md mx-4 rounded-3xl p-8"
+              style={{ background: '#0f0f1a', border: '1px solid rgba(249,115,22,0.25)', boxShadow: '0 24px 80px rgba(249,115,22,0.15)' }}
+              initial={{ scale: 0.85, y: 40, opacity: 0 }} animate={{ scale: 1, y: 0, opacity: 1 }} exit={{ scale: 0.85, y: 40, opacity: 0 }}
+              transition={{ type: 'spring', stiffness: 280, damping: 24 }}
+              onClick={e => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between mb-7">
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-2xl flex items-center justify-center" style={{ background: 'linear-gradient(135deg,#f97316,#ea580c)', boxShadow: '0 4px 16px rgba(249,115,22,0.4)' }}>
+                    <KeyRound size={20} className="text-white" />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-black text-white">Change Password</h2>
+                    <p className="text-xs" style={{ color: 'rgba(255,255,255,0.35)' }}>Admin account security</p>
+                  </div>
+                </div>
+                <motion.button onClick={() => setShowChangePw(false)} whileHover={{ scale: 1.1, rotate: 90 }} whileTap={{ scale: 0.9 }}
+                  className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.4)' }}>
+                  <X size={16} />
+                </motion.button>
+              </div>
+
+              {/* Success state */}
+              <AnimatePresence>
+                {changePwSuccess && (
+                  <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }}
+                    className="flex flex-col items-center gap-3 py-6 text-center">
+                    <motion.div className="w-16 h-16 rounded-full flex items-center justify-center"
+                      style={{ background: 'rgba(34,197,94,0.15)' }}
+                      animate={{ scale: [0.8, 1.1, 1] }} transition={{ duration: 0.5 }}>
+                      <Check size={32} style={{ color: '#4ade80' }} />
+                    </motion.div>
+                    <p className="text-lg font-bold" style={{ color: '#4ade80' }}>Password Changed!</p>
+                    <p className="text-sm" style={{ color: 'rgba(255,255,255,0.4)' }}>Your password has been updated successfully.</p>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {!changePwSuccess && (
+                <form onSubmit={handleChangePassword} className="space-y-5">
+                  {/* Error */}
+                  <AnimatePresence>
+                    {changePwError && (
+                      <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
+                        className="flex items-center gap-2 p-3 rounded-2xl text-sm overflow-hidden"
+                        style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: '#f87171' }}>
+                        <AlertTriangle size={14} className="flex-shrink-0" />{changePwError}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  {/* Current Password */}
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-[0.2em] mb-2" style={{ color: 'rgba(255,255,255,0.3)' }}>Current Password</label>
+                    <div className="relative">
+                      <input type={showCurPw ? 'text' : 'password'} required className="input-dark pr-11"
+                        placeholder="Enter current password" value={changePwForm.current}
+                        onChange={e => setChangePwForm({ ...changePwForm, current: e.target.value })} />
+                      <button type="button" onClick={() => setShowCurPw(!showCurPw)}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 transition-colors hover:text-orange-400"
+                        style={{ color: 'rgba(255,255,255,0.3)' }}>
+                        {showCurPw ? <EyeOff size={15} /> : <Eye size={15} />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* New Password */}
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-[0.2em] mb-2" style={{ color: 'rgba(255,255,255,0.3)' }}>New Password</label>
+                    <div className="relative">
+                      <input type={showNewPw ? 'text' : 'password'} required className="input-dark pr-11"
+                        placeholder="Enter new password (min 4 chars)" value={changePwForm.next}
+                        onChange={e => setChangePwForm({ ...changePwForm, next: e.target.value })} />
+                      <button type="button" onClick={() => setShowNewPw(!showNewPw)}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 transition-colors hover:text-orange-400"
+                        style={{ color: 'rgba(255,255,255,0.3)' }}>
+                        {showNewPw ? <EyeOff size={15} /> : <Eye size={15} />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Confirm New Password */}
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-[0.2em] mb-2" style={{ color: 'rgba(255,255,255,0.3)' }}>Confirm New Password</label>
+                    <input type="password" required className="input-dark"
+                      placeholder="Re-enter new password" value={changePwForm.confirm}
+                      onChange={e => setChangePwForm({ ...changePwForm, confirm: e.target.value })} />
+                  </div>
+
+                  <motion.button type="submit" disabled={changePwLoading}
+                    className="w-full py-3.5 rounded-2xl font-bold text-white flex items-center justify-center gap-2 mt-2 overflow-hidden relative group"
+                    style={{ background: 'linear-gradient(135deg,#f97316,#ea580c)', boxShadow: '0 4px 20px rgba(249,115,22,0.35)' }}
+                    whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}>
+                    <div className="absolute inset-0 bg-white/20 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700 skew-x-[-20deg]" />
+                    {changePwLoading
+                      ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      : <><KeyRound size={16} /><span>Update Password</span></>}
+                  </motion.button>
+                </form>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* ===== MAIN ===== */}
       <main className="flex-1 overflow-y-auto p-8">
@@ -617,81 +803,414 @@ export default function AdminDashboard() {
             <motion.div key="billing" className="space-y-6 max-w-6xl"
               initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.3 }}>
-              <div>
-                <h2 className="text-3xl font-black text-white">Billing & Payments</h2>
-                <p className="mt-1 text-sm" style={{ color: 'rgba(255,255,255,0.35)' }}>Manage orders ready for checkout</p>
+              <div className="flex items-end justify-between flex-wrap gap-3">
+                <div>
+                  <h2 className="text-3xl font-black text-white">Billing & Payments</h2>
+                  <p className="mt-1 text-sm" style={{ color: 'rgba(255,255,255,0.35)' }}>
+                    {groupedBillsList.length > 0
+                      ? `${groupedBillsList.length} table${groupedBillsList.length > 1 ? 's' : ''} • ${pendingBills.length} order${pendingBills.length > 1 ? 's' : ''} combined into single bills`
+                      : 'All tables cleared'}
+                  </p>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {pendingBills.length === 0 ? (
-                  <div className="col-span-full py-12 text-center text-gray-500">
-                    <CheckCircle2 size={48} className="mx-auto mb-4 opacity-20" />
-                    <p>No pending bills.</p>
+                {groupedBillsList.length === 0 ? (
+                  <div className="col-span-full py-16 text-center">
+                    <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: 'spring' }}
+                      className="w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4"
+                      style={{ background: 'rgba(34,197,94,0.1)' }}>
+                      <CheckCircle2 size={40} style={{ color: '#4ade80' }} />
+                    </motion.div>
+                    <p className="text-lg font-bold text-white/50">No pending bills</p>
+                    <p className="text-sm text-white/25 mt-1">All tables are cleared ✓</p>
                   </div>
-                ) : pendingBills.map(order => (
-                  <motion.div key={order.id} className="rounded-3xl p-6 relative overflow-hidden"
-                    style={{ background: 'rgba(255,255,255,0.03)', border: order.status === 'billing' ? '1px solid rgba(6,182,212,0.4)' : '1px solid rgba(255,255,255,0.06)' }}
-                    initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}>
-                    {order.status === 'billing' && (
-                      <div className="absolute top-0 right-0 px-4 py-1.5 rounded-bl-2xl font-bold text-[10px] uppercase tracking-widest bg-cyan-500/20 text-cyan-400">
-                        Requested
-                      </div>
-                    )}
-                    <h3 className="font-bold text-xl text-white mb-1">
-                      Table {order.table_number.includes(' ') ? order.table_number.split(' ').slice(1).join(' ') : order.table_number}
-                    </h3>
-                    <p className="text-xs text-gray-400 mb-4">Order #{order.id} • Waiter: {order.waiter_name}</p>
-
-                    <div className="space-y-2 mb-6 max-h-48 overflow-y-auto pr-2">
-                      {order.items.map((item: any, idx: number) => (
-                        <div key={idx} className="flex justify-between text-sm">
-                          <span className="text-gray-300">
-                            <span className="text-orange-400 font-bold mr-2">{item.quantity}x</span>
-                            {item.item_name} {item.portion === 'half' && <span className="text-[10px] text-purple-400">½</span>}
-                          </span>
-                          <span className="font-bold text-white">
-                            ₹{(item.portion === 'half' ? (item.half_price || item.price / 2) : item.price) * item.quantity}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="flex justify-between items-center pt-4 border-t border-white/10 mb-6">
-                      <span className="text-gray-400 font-bold uppercase tracking-widest text-xs">Total Amount</span>
-                      <span className="text-2xl font-black text-orange-400">₹{order.total_price}</span>
-                    </div>
-
-                    <motion.button
-                      onClick={() => markOrderPaid(order.id)}
-                      disabled={payingId !== null}
-                      className="w-full py-3.5 rounded-2xl font-bold flex items-center justify-center gap-2"
+                ) : groupedBillsList.map((group: any, gi: number) => {
+                  const orderIds = group.orders.map((o: any) => o.id);
+                  const isProcessing = payingId === group.table_id;
+                  return (
+                    <motion.div key={group.table_id} className="rounded-3xl p-6 relative overflow-hidden"
                       style={{
-                        background: payingId === order.id
-                          ? 'linear-gradient(135deg, #16a34a, #15803d)'
-                          : 'linear-gradient(135deg, #22c55e, #16a34a)',
-                        color: 'white',
-                        boxShadow: '0 4px 20px rgba(34,197,94,0.3)',
-                        opacity: payingId !== null && payingId !== order.id ? 0.5 : 1,
-                        cursor: payingId !== null ? 'not-allowed' : 'pointer',
+                        background: 'rgba(255,255,255,0.03)',
+                        border: group.hasBillingRequest ? '1px solid rgba(6,182,212,0.45)' : '1px solid rgba(255,255,255,0.07)'
                       }}
-                      whileHover={payingId === null ? { scale: 1.02 } : {}}
-                      whileTap={payingId === null ? { scale: 0.96 } : {}}>
-                      {payingId === order.id ? (
+                      initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}
+                      transition={{ delay: gi * 0.06 }}>
+
+                      {/* Bill requested badge */}
+                      {group.hasBillingRequest && (
                         <motion.div
-                          className="w-5 h-5 border-2 border-white border-t-transparent rounded-full"
-                          animate={{ rotate: 360 }}
-                          transition={{ duration: 0.7, repeat: Infinity, ease: 'linear' }}
-                        />
-                      ) : (
-                        <CheckCircle2 size={18} />
+                          className="absolute top-0 right-0 px-4 py-1.5 rounded-bl-2xl font-bold text-[10px] uppercase tracking-widest"
+                          style={{ background: 'rgba(6,182,212,0.18)', color: '#06b6d4' }}
+                          animate={{ opacity: [0.6, 1, 0.6] }} transition={{ duration: 1.8, repeat: Infinity }}>
+                          Bill Requested
+                        </motion.div>
                       )}
-                      {payingId === order.id ? 'Processing...' : 'Mark as Paid'}
-                    </motion.button>
-                  </motion.div>
-                ))}
+
+                      {/* Table header */}
+                      <div className="mb-4">
+                        <h3 className="font-black text-2xl text-white">
+                          {group.table_number.includes(' ') ? group.table_number : `Table ${group.table_number}`}
+                        </h3>
+                        <p className="text-xs mt-0.5" style={{ color: 'rgba(255,255,255,0.35)' }}>
+                          Waiter: {group.waiter_name} &nbsp;•&nbsp;
+                          <span style={{ color: '#f97316' }}>{group.orders.length} order{group.orders.length > 1 ? 's' : ''} combined</span>
+                        </p>
+                      </div>
+
+                      {/* Order dividers */}
+                      <div className="space-y-3 mb-5 max-h-56 overflow-y-auto pr-1">
+                        {group.orders.map((order: any, oi: number) => (
+                          <div key={order.id}>
+                            {group.orders.length > 1 && (
+                              <p className="text-[9px] font-black uppercase tracking-widest mb-1.5" style={{ color: 'rgba(255,255,255,0.2)' }}>
+                                Order #{order.id}
+                              </p>
+                            )}
+                            {(order.items || []).map((item: any, idx: number) => (
+                              <div key={idx} className="flex justify-between text-sm mb-1.5">
+                                <span className="text-gray-300">
+                                  <span className="text-orange-400 font-bold mr-2">{item.quantity}x</span>
+                                  {item.item_name}{item.portion === 'half' && <span className="text-[10px] text-purple-400 ml-1">½</span>}
+                                </span>
+                                <span className="font-bold text-white">
+                                  ₹{((item.portion === 'half' ? (item.half_price || item.price / 2) : item.price) * item.quantity).toFixed(0)}
+                                </span>
+                              </div>
+                            ))}
+                            {oi < group.orders.length - 1 && (
+                              <div style={{ borderTop: '1px dashed rgba(255,255,255,0.05)', marginTop: '10px', marginBottom: '4px' }} />
+                            )}
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Grand total */}
+                      <div className="flex justify-between items-center py-4 mb-5" style={{ borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                        <div>
+                          <p className="text-xs font-bold uppercase tracking-widest" style={{ color: 'rgba(255,255,255,0.3)' }}>Grand Total</p>
+                          {group.orders.length > 1 && (
+                            <p className="text-[10px] mt-0.5" style={{ color: 'rgba(255,255,255,0.2)' }}>
+                              {group.orders.map((o: any) => `₹${o.total_price}`).join(' + ')}
+                            </p>
+                          )}
+                        </div>
+                        <span className="text-3xl font-black" style={{ color: '#f97316' }}>₹{group.total.toFixed(0)}</span>
+                      </div>
+
+                      {/* ─── Edit Bill button ─────────────────────── */}
+                      <motion.button
+                        onClick={() => {
+                          setEditingGroup(JSON.parse(JSON.stringify(group))); // deep clone
+                          setEditDiscount({ type: 'flat', value: '' });
+                        }}
+                        className="w-full py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 mb-3"
+                        style={{ background: 'rgba(255,255,255,0.05)', color: 'rgba(255,255,255,0.6)', border: '1px solid rgba(255,255,255,0.08)' }}
+                        whileHover={{ background: 'rgba(255,255,255,0.09)', color: 'white' }}
+                        whileTap={{ scale: 0.97 }}>
+                        <FileText size={15} /> Edit Bill
+                      </motion.button>
+
+                      {/* Print Bill button */}
+                      <motion.button
+                        onClick={() => {
+                          const w = window.open('', '_blank', 'width=320,height=600,scrollbars=yes');
+                          if (!w) return;
+                          const tableLabel = group.table_number.includes(' ') ? group.table_number : `Table ${group.table_number}`;
+                          const now = new Date().toLocaleString('en-IN');
+                          const itemRows = group.orders.map((order: any, oi: number) => {
+                            const orderHeader = group.orders.length > 1
+                              ? `<tr><td colspan="3" style="padding:5px 0 2px;font-size:9px;color:#888;text-transform:uppercase;letter-spacing:1px;border-top:1px dashed #ccc;">Order #${order.id}</td></tr>`
+                              : '';
+                            const rows = (order.items || []).map((item: any) => {
+                              const p = item.portion === 'half' ? (item.half_price || item.price / 2) : item.price;
+                              const sub = (p * item.quantity).toFixed(0);
+                              const name = item.item_name + (item.portion === 'half' ? ' (1/2)' : '');
+                              return `<tr>
+                                <td style="padding:3px 0;font-size:11px;word-break:break-word">${name}</td>
+                                <td style="text-align:center;font-size:11px;white-space:nowrap">${item.quantity}</td>
+                                <td style="text-align:right;font-size:11px;white-space:nowrap">Rs.${sub}</td>
+                              </tr>`;
+                            }).join('');
+                            return orderHeader + rows;
+                          }).join('');
+                          w.document.write(`<!DOCTYPE html>
+                            <html><head><title>Bill - ${tableLabel}</title>
+                            <meta charset="utf-8"/>
+                            <style>
+                              @page {
+                                size: 80mm auto;
+                                margin: 2mm 2mm 4mm 2mm;
+                              }
+                              * { box-sizing: border-box; margin: 0; padding: 0; }
+                              body {
+                                font-family: 'Courier New', Courier, monospace;
+                                font-size: 11px;
+                                width: 76mm;
+                                color: #000;
+                                background: #fff;
+                              }
+                              .center { text-align: center; }
+                              .rest-name { font-size: 15px; font-weight: bold; letter-spacing: 0.5px; margin-bottom: 2px; }
+                              .sub { font-size: 10px; color: #333; margin-top: 1px; }
+                              .divider { border: none; border-top: 1px dashed #555; margin: 5px 0; width: 100%; }
+                              table { width: 100%; border-collapse: collapse; }
+                              th {
+                                font-size: 9px; text-transform: uppercase; color: #333;
+                                padding: 3px 0; border-bottom: 1px solid #333; text-align: left;
+                              }
+                              th:nth-child(2) { text-align: center; }
+                              th:nth-child(3) { text-align: right; }
+                              td { padding: 2px 0; vertical-align: top; font-size: 11px; }
+                              .total-row td {
+                                font-weight: bold; font-size: 13px;
+                                padding-top: 5px; border-top: 2px solid #000;
+                              }
+                              .total-row td:last-child { text-align: right; }
+                              .footer { text-align: center; margin-top: 8px; font-size: 10px; color: #555; }
+                              @media print {
+                                body { width: 76mm; }
+                                button { display: none !important; }
+                              }
+                            </style></head>
+                            <body>
+                              <div class="center">
+                                <div class="rest-name">*** RESTAURANT ***</div>
+                                <div class="sub">${tableLabel} | Waiter: ${group.waiter_name}</div>
+                                <div class="sub">${now}</div>
+                              </div>
+                              <hr class="divider"/>
+                              <table>
+                                <thead>
+                                  <tr>
+                                    <th>Item</th>
+                                    <th style="text-align:center">Qty</th>
+                                    <th style="text-align:right">Amt</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  ${itemRows}
+                                  <tr><td colspan="3"><hr class="divider" style="margin:4px 0"/></td></tr>
+                                  <tr class="total-row">
+                                    <td colspan="2">TOTAL</td>
+                                    <td>Rs.${group.total.toFixed(0)}</td>
+                                  </tr>
+                                </tbody>
+                              </table>
+                              <hr class="divider"/>
+                              <div class="footer">Thank you! Please visit again :)</div>
+                              <script>window.onload=function(){window.print();window.onafterprint=function(){window.close();}}<\/script>
+                            </body></html>
+                          `);
+                          w.document.close();
+                        }}
+                        className="w-full py-3.5 rounded-2xl font-bold text-white flex items-center justify-center gap-2 mb-3 relative overflow-hidden group"
+                        style={{
+                          background: 'linear-gradient(135deg,#f97316,#ea580c)',
+                          boxShadow: '0 4px 16px rgba(249,115,22,0.35)',
+                        }}
+                        whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}>
+                        <div className="absolute inset-0 bg-white/10 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700 skew-x-[-20deg]" />
+                        <Printer size={18} /> Print Bill
+                      </motion.button>
+
+                      {/* Pay button */}
+                      <motion.button
+                        onClick={() => markTablePaid(group.table_id, orderIds)}
+                        disabled={payingId !== null}
+                        className="w-full py-4 rounded-2xl font-black text-white flex items-center justify-center gap-2 relative overflow-hidden group"
+                        style={{
+                          background: isProcessing
+                            ? 'linear-gradient(135deg,#16a34a,#15803d)'
+                            : 'linear-gradient(135deg,#22c55e,#16a34a)',
+                          boxShadow: '0 4px 24px rgba(34,197,94,0.35)',
+                          opacity: payingId !== null && !isProcessing ? 0.45 : 1,
+                          cursor: payingId !== null ? 'not-allowed' : 'pointer',
+                        }}
+                        whileHover={payingId === null ? { scale: 1.02 } : {}}
+                        whileTap={payingId === null ? { scale: 0.97 } : {}}>
+                        <div className="absolute inset-0 bg-white/10 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700 skew-x-[-20deg]" />
+                        {isProcessing ? (
+                          <motion.div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full"
+                            animate={{ rotate: 360 }} transition={{ duration: 0.7, repeat: Infinity, ease: 'linear' }} />
+                        ) : <CheckCircle2 size={20} />}
+                        {isProcessing ? 'Processing...' : `Mark Table Paid  •  ₹${group.total.toFixed(0)}`}
+                      </motion.button>
+                    </motion.div>
+                  );
+                })}
               </div>
             </motion.div>
           )}
+
+          {/* ═══ EDIT BILL MODAL ═══════════════════════════════════════════ */}
+          <AnimatePresence>
+            {editingGroup && (
+              <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+                <motion.div className="fixed inset-0 bg-black/80 backdrop-blur-sm"
+                  initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                  onClick={() => setEditingGroup(null)} />
+
+                <motion.div className="relative w-full max-w-lg rounded-3xl flex flex-col"
+                  style={{ background: '#111118', border: '1px solid rgba(255,255,255,0.1)', maxHeight: '90vh' }}
+                  initial={{ scale: 0.88, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.88, opacity: 0 }}
+                  transition={{ type: 'spring', stiffness: 300, damping: 26 }}>
+
+                  {/* Header */}
+                  <div className="flex items-center justify-between px-6 py-5" style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+                    <div>
+                      <h3 className="font-black text-xl text-white flex items-center gap-2">
+                        <FileText size={18} style={{ color: '#f97316' }} /> Edit Bill
+                      </h3>
+                      <p className="text-xs mt-0.5" style={{ color: 'rgba(255,255,255,0.35)' }}>
+                        {editingGroup.table_number.includes(' ') ? editingGroup.table_number : `Table ${editingGroup.table_number}`}
+                        &nbsp;•&nbsp;{editingGroup.orders.length} order{editingGroup.orders.length > 1 ? 's' : ''}
+                      </p>
+                    </div>
+                    <motion.button onClick={() => setEditingGroup(null)}
+                      className="w-9 h-9 rounded-xl flex items-center justify-center"
+                      style={{ background: 'rgba(255,255,255,0.06)' }}
+                      whileHover={{ background: 'rgba(255,255,255,0.1)' }} whileTap={{ scale: 0.9 }}>
+                      <X size={16} style={{ color: 'rgba(255,255,255,0.5)' }} />
+                    </motion.button>
+                  </div>
+
+                  {/* Items list */}
+                  <div className="overflow-y-auto flex-1 px-6 py-4 space-y-2">
+                    {editingGroup.orders.map((order: any, oi: number) => (
+                      <div key={order.id}>
+                        {editingGroup.orders.length > 1 && (
+                          <p className="text-[9px] font-black uppercase tracking-widest mb-1 mt-2" style={{ color: 'rgba(255,255,255,0.2)' }}>
+                            Order #{order.id}
+                          </p>
+                        )}
+                        {(order.items || []).map((item: any) => {
+                          const p = item.portion === 'half' ? (item.half_price || item.price / 2) : item.price;
+                          const sub = (p * item.quantity).toFixed(0);
+                          const isRemoving = removingItemId === item.id;
+                          return (
+                            <motion.div key={item.id} layout
+                              className="flex items-center gap-3 py-2 px-3 rounded-xl"
+                              style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.05)' }}>
+                              <div className="flex-1">
+                                <p className="text-sm font-semibold text-white">
+                                  <span className="text-orange-400 font-black mr-1">{item.quantity}×</span>
+                                  {item.item_name}
+                                  {item.portion === 'half' && <span className="text-purple-400 text-[10px] ml-1">½</span>}
+                                </p>
+                              </div>
+                              <p className="font-bold text-sm" style={{ color: '#f97316' }}>₹{sub}</p>
+                              <motion.button
+                                onClick={async () => {
+                                  if (!window.confirm(`Remove "${item.item_name}" from bill?`)) return;
+                                  setRemovingItemId(item.id);
+                                  try {
+                                    await axios.delete(`/api/admin/order-items/${item.id}`);
+                                    // Update local state
+                                    const priceDiff = p * item.quantity;
+                                    setEditingGroup((prev: any) => {
+                                      const clone = JSON.parse(JSON.stringify(prev));
+                                      clone.total -= priceDiff;
+                                      clone.orders = clone.orders.map((o: any) => ({
+                                        ...o,
+                                        items: o.id === order.id
+                                          ? o.items.filter((i: any) => i.id !== item.id)
+                                          : o.items,
+                                        total_price: o.id === order.id ? Math.max(0, o.total_price - priceDiff) : o.total_price,
+                                      }));
+                                      return clone;
+                                    });
+                                    await Promise.all([fetchOrders(), fetchStats()]);
+                                  } catch (e: any) { alert('Failed: ' + e.message); }
+                                  setRemovingItemId(null);
+                                }}
+                                disabled={isRemoving}
+                                className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
+                                style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171' }}
+                                whileHover={{ background: 'rgba(239,68,68,0.25)' }} whileTap={{ scale: 0.88 }}>
+                                {isRemoving
+                                  ? <motion.div className="w-3 h-3 border-2 border-red-400 border-t-transparent rounded-full" animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 0.6 }} />
+                                  : <X size={13} />}
+                              </motion.button>
+                            </motion.div>
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Discount section */}
+                  <div className="px-6 py-4 space-y-3" style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+                    <p className="text-xs font-black uppercase tracking-widest" style={{ color: 'rgba(255,255,255,0.3)' }}>
+                      Apply Discount
+                    </p>
+                    <div className="flex gap-2">
+                      {/* Type toggle */}
+                      <div className="flex rounded-xl overflow-hidden" style={{ border: '1px solid rgba(255,255,255,0.08)' }}>
+                        {(['flat', 'percent'] as const).map(t => (
+                          <button key={t} onClick={() => setEditDiscount(d => ({ ...d, type: t }))}
+                            className="px-4 py-2 text-xs font-bold transition-all"
+                            style={editDiscount.type === t
+                              ? { background: 'rgba(249,115,22,0.2)', color: '#f97316' }
+                              : { background: 'rgba(255,255,255,0.03)', color: 'rgba(255,255,255,0.35)' }}>
+                            {t === 'flat' ? '₹ Flat' : '% Percent'}
+                          </button>
+                        ))}
+                      </div>
+                      {/* Value input */}
+                      <input type="number" min="0" placeholder={editDiscount.type === 'flat' ? 'e.g. 50' : 'e.g. 10'}
+                        value={editDiscount.value}
+                        onChange={e => setEditDiscount(d => ({ ...d, value: e.target.value }))}
+                        className="flex-1 bg-transparent outline-none text-sm px-4 py-2 rounded-xl font-bold"
+                        style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'white' }} />
+                      {/* Apply */}
+                      <motion.button
+                        onClick={async () => {
+                          const val = parseFloat(editDiscount.value);
+                          if (!val || val <= 0) return;
+                          setEditSaving(true);
+                          try {
+                            const orderIds = editingGroup.orders.map((o: any) => o.id);
+                            await axios.put('/api/admin/orders/discount', {
+                              order_ids: orderIds,
+                              discount_type: editDiscount.type,
+                              discount_value: val,
+                            });
+                            setEditDiscount({ type: editDiscount.type, value: '' });
+                            await Promise.all([fetchOrders(), fetchStats()]);
+                            // Refresh editingGroup total from fresh data
+                            setEditingGroup(null);
+                          } catch (e: any) { alert('Failed: ' + e.message); }
+                          setEditSaving(false);
+                        }}
+                        disabled={!editDiscount.value || editSaving}
+                        className="px-5 py-2 rounded-xl font-bold text-sm text-white"
+                        style={{ background: editDiscount.value ? 'linear-gradient(135deg,#f97316,#ea580c)' : 'rgba(255,255,255,0.06)', opacity: editDiscount.value ? 1 : 0.5 }}
+                        whileHover={editDiscount.value ? { scale: 1.04 } : {}} whileTap={{ scale: 0.96 }}>
+                        {editSaving ? '⏳' : 'Apply'}
+                      </motion.button>
+                    </div>
+
+                    {/* Running total */}
+                    <div className="flex justify-between items-center pt-2">
+                      <p className="text-xs font-bold uppercase tracking-widest" style={{ color: 'rgba(255,255,255,0.25)' }}>Current Total</p>
+                      <motion.p key={editingGroup.total} className="text-2xl font-black" style={{ color: '#f97316' }}
+                        initial={{ scale: 1.2 }} animate={{ scale: 1 }}>
+                        ₹{editingGroup.total.toFixed(0)}
+                      </motion.p>
+                    </div>
+
+                    <motion.button onClick={() => setEditingGroup(null)}
+                      className="w-full py-3 rounded-2xl font-bold text-white"
+                      style={{ background: 'linear-gradient(135deg,#22c55e,#16a34a)', boxShadow: '0 4px 16px rgba(34,197,94,0.3)' }}
+                      whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}>
+                      ✓ Done Editing
+                    </motion.button>
+                  </div>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
 
           {/* MENU TAB */}
           {activeTab === 'menu' && (
@@ -1110,8 +1629,113 @@ export default function AdminDashboard() {
               <motion.div className="mt-8 rounded-3xl p-6"
                 style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}
                 initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
+
+                {/* Header */}
+                <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-2xl flex items-center justify-center" style={{ background: 'rgba(249,115,22,0.15)' }}>
+                      <MapPin size={20} className="text-orange-500" />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-bold text-white">Table Management</h3>
+                      <p className="text-xs" style={{ color: 'rgba(255,255,255,0.35)' }}>Add or remove restaurant tables</p>
+                    </div>
+                    <motion.span key={tables.length} initial={{ scale: 1.3 }} animate={{ scale: 1 }}
+                      className="ml-2 px-3 py-1 rounded-full text-sm font-black"
+                      style={{ background: 'rgba(249,115,22,0.12)', color: '#f97316', border: '1px solid rgba(249,115,22,0.25)' }}>
+                      {tables.length} Tables
+                    </motion.span>
+                  </div>
+
+                  {/* Add Table Form */}
+                  <form onSubmit={async (e) => {
+                    e.preventDefault();
+                    const input = (e.currentTarget.elements.namedItem('newTableName') as HTMLInputElement);
+                    const name = input.value.trim();
+                    if (!name) return;
+                    try {
+                      await axios.post('/api/admin/tables', { table_number: name });
+                      input.value = '';
+                      fetchStaff();
+                    } catch (err: any) {
+                      alert(err.response?.data?.error || 'Failed to add table');
+                    }
+                  }} className="flex gap-2">
+                    <input
+                      name="newTableName"
+                      type="text"
+                      className="input-dark"
+                      placeholder="e.g. Table 11"
+                      style={{ width: '160px', paddingTop: '10px', paddingBottom: '10px' }}
+                    />
+                    <motion.button type="submit"
+                      className="flex items-center gap-2 px-5 py-2.5 rounded-2xl font-bold text-white text-sm"
+                      style={{ background: 'linear-gradient(135deg,#f97316,#ea580c)', boxShadow: '0 4px 16px rgba(249,115,22,0.35)' }}
+                      whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+                      <Plus size={16} /> Add Table
+                    </motion.button>
+                  </form>
+                </div>
+
+                {/* Tables Grid */}
+                {tables.length === 0 ? (
+                  <div className="py-12 text-center" style={{ color: 'rgba(255,255,255,0.2)' }}>
+                    <MapPin size={40} className="mx-auto mb-3 opacity-20" />
+                    <p className="text-sm">No tables yet. Add one above.</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-3">
+                    <AnimatePresence>
+                      {tables.map((t, i) => {
+                        const assignedWaiters = (assignments || []).filter(a => a.table_id === t.id);
+                        return (
+                          <motion.div key={t.id}
+                            initial={{ opacity: 0, scale: 0.7 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.5 }}
+                            transition={{ delay: i * 0.03, type: 'spring', stiffness: 300, damping: 22 }}
+                            className="relative group flex flex-col items-center justify-center gap-1.5 py-4 px-2 rounded-2xl cursor-default"
+                            style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}
+                            whileHover={{ scale: 1.06, borderColor: 'rgba(249,115,22,0.4)', background: 'rgba(249,115,22,0.07)' }}>
+                            {/* Delete button */}
+                            <motion.button
+                              onClick={async () => {
+                                if (!window.confirm(`Delete "${t.table_number}"? This cannot be undone.`)) return;
+                                try {
+                                  await axios.delete(`/api/admin/tables/${t.id}`);
+                                  fetchStaff();
+                                } catch (err: any) {
+                                  alert(err.response?.data?.error || 'Failed to delete');
+                                }
+                              }}
+                              className="absolute -top-2 -right-2 w-6 h-6 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                              style={{ background: '#ef4444', color: 'white', boxShadow: '0 2px 8px rgba(239,68,68,0.5)' }}
+                              whileHover={{ scale: 1.15 }} whileTap={{ scale: 0.9 }}>
+                              <X size={11} />
+                            </motion.button>
+                            <div className="text-2xl font-black" style={{ color: '#f97316' }}>
+                              {t.table_number.replace(/[^0-9]/g, '') || '🪑'}
+                            </div>
+                            <p className="text-[10px] font-bold text-center leading-tight" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                              {t.table_number}
+                            </p>
+                            {assignedWaiters.length > 0 && (
+                              <span className="text-[8px] font-bold px-1.5 py-0.5 rounded-full" style={{ background: 'rgba(6,182,212,0.15)', color: '#06b6d4' }}>
+                                {assignedWaiters[0].waiter_name?.split(' ')[0]}
+                              </span>
+                            )}
+                          </motion.div>
+                        );
+                      })}
+                    </AnimatePresence>
+                  </div>
+                )}
+              </motion.div>
+
+              {/* Waiter → Table Assignment Section */}
+              <motion.div className="mt-6 rounded-3xl p-6"
+                style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}
+                initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
                 <h3 className="text-xl font-bold text-white mb-6 flex items-center gap-3">
-                  <MapPin size={22} className="text-orange-500" /> Room / Table Management
+                  <Users size={20} className="text-cyan-400" /> Waiter Table Assignments
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {(staff || []).filter(s => s.role === 'waiter').map(waiter => {

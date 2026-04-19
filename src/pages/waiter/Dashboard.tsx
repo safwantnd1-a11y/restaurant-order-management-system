@@ -906,29 +906,7 @@ export default function WaiterDashboard() {
                     </div>
                   </div>
 
-                  {/* Action buttons row */}
-                  <div className="flex border-t" style={{ borderColor:'rgba(255,255,255,0.05)' }}>
-                    {/* Add items */}
-                    {!['paid','cancelled','billing'].includes(order.status) && (
-                      <button onClick={() => setAddOrder(order)}
-                        className="flex-1 py-3 flex items-center justify-center gap-1.5 text-xs font-bold"
-                        style={{ color:'#f97316', borderRight:'1px solid rgba(255,255,255,0.05)' }}>
-                        <PlusCircle size={13}/> Add Items
-                      </button>
-                    )}
-                    {/* Note */}
-                    <button onClick={() => setNoteOrder(order)}
-                      className="flex-1 py-3 flex items-center justify-center gap-1.5 text-xs font-bold"
-                      style={{ color:'rgba(255,255,255,0.4)', borderRight:'1px solid rgba(255,255,255,0.05)' }}>
-                      <MessageSquare size={13}/> Note
-                    </button>
-                    {/* Bill preview */}
-                    <button onClick={() => setBillOrder(order)}
-                      className="flex-1 py-3 flex items-center justify-center gap-1.5 text-xs font-bold"
-                      style={{ color:'#22d3ee' }}>
-                      <FileText size={13}/> Bill
-                    </button>
-                  </div>
+
 
                   {/* Status actions */}
                   {order.status==='ready' && (
@@ -1062,9 +1040,63 @@ export default function WaiterDashboard() {
                 </motion.button>
               </div>
 
-              {!selectedTable && (
-                <div className="mx-6 mb-3 px-4 py-3 rounded-2xl text-sm" style={{ background:'rgba(249,115,22,0.1)', color:'#fb923c', border:'1px solid rgba(249,115,22,0.2)' }}>
-                  ⚠️ Please select a table first
+              {/* ── Inline Table Selector (shown when no table is selected) ── */}
+              {!selectedTable && tables.length > 0 && (
+                <div className="mx-6 mb-3">
+                  <div className="px-4 py-3 rounded-2xl mb-3 text-sm flex items-center gap-2"
+                    style={{ background:'rgba(249,115,22,0.08)', color:'#fb923c', border:'1px solid rgba(249,115,22,0.2)' }}>
+                    ⚠️ Select a table to place order
+                  </div>
+                  <div className="grid grid-cols-5 gap-2">
+                    {tables.map(t => {
+                      const st  = tableStatus(t.id);
+                      const tc    = TABLE_COLORS[st];
+                      const num   = (t.table_number || '').replace('Table ', '');
+                      const isFree = st === 'free';
+                      return (
+                        <motion.button key={t.id}
+                          onClick={() => isFree && setSelTable(t.id)}
+                          whileHover={isFree ? { scale: 1.08 } : {}}
+                          whileTap={isFree ? { scale: 0.92 } : {}}
+                          className="py-2.5 rounded-2xl font-black text-sm relative"
+                          style={{
+                            background: isFree ? tc.bg : 'rgba(255,255,255,0.03)',
+                            border: `1.5px solid ${isFree ? tc.border : 'rgba(255,255,255,0.06)'}`,
+                            color: isFree ? tc.text : 'rgba(255,255,255,0.2)',
+                            cursor: isFree ? 'pointer' : 'not-allowed',
+                            opacity: isFree ? 1 : 0.45,
+                          }}>
+                          {num}
+                          {!isFree && (
+                            <span className="absolute inset-0 flex items-center justify-center rounded-2xl text-[8px] font-black"
+                              style={{ color: 'rgba(255,255,255,0.3)', letterSpacing: '0.05em' }}>
+                              <br/>Busy
+                            </span>
+                          )}
+                        </motion.button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Selected table chip — shown when table IS selected */}
+              {selectedTable && (
+                <div className="mx-6 mb-3 flex items-center justify-between px-4 py-2.5 rounded-2xl"
+                  style={{ background:'rgba(249,115,22,0.08)', border:'1px solid rgba(249,115,22,0.2)' }}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold" style={{ color:'rgba(255,255,255,0.4)' }}>Table:</span>
+                    <span className="font-black text-sm" style={{ color:'#f97316' }}>
+                      {tables.find(t => t.id === selectedTable)?.table_number}
+                    </span>
+                  </div>
+                  <motion.button onClick={() => setSelTable(null)}
+                    className="text-xs font-bold px-2 py-1 rounded-lg"
+                    style={{ background:'rgba(255,255,255,0.06)', color:'rgba(255,255,255,0.35)' }}
+                    whileHover={{ background:'rgba(239,68,68,0.15)', color:'#f87171' }}
+                    whileTap={{ scale: 0.9 }}>
+                    Change
+                  </motion.button>
                 </div>
               )}
 

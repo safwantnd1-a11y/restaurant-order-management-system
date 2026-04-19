@@ -325,6 +325,25 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  // Change password (any authenticated user can change their own password)
+  app.put('/api/auth/change-password', authenticate, (req: any, res: any) => {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) return res.status(400).json({ error: 'currentPassword and newPassword are required' });
+    if (newPassword.length < 4) return res.status(400).json({ error: 'New password must be at least 4 characters' });
+
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id) as any;
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    if (!bcrypt.compareSync(currentPassword, user.password)) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    const hashed = bcrypt.hashSync(newPassword, 10);
+    db.prepare('UPDATE users SET password = ? WHERE id = ?').run(hashed, req.user.id);
+    res.json({ success: true });
+  });
+
+
   // Menu Routes
   app.get('/api/menu', (req, res) => {
     const menu = db.prepare('SELECT * FROM menu').all();
@@ -702,13 +721,46 @@ async function startServer() {
       // Update total price
       db.prepare('UPDATE orders SET total_price = total_price + ? WHERE id = ?').run(addedTotal, orderId);
 
-      io.emit('order-status-updated', { id: orderId, status: order.status });
+      // ── KEY FIX: If the order was already served/billing/ready/paid,
+      // reset it to 'new' so kitchen gets notified about the extra items.
+      const kitchenStatuses = ['served', 'billing', 'ready', 'paid'];
+      let newStatus = order.status;
+      if (kitchenStatuses.includes(order.status)) {
+        newStatus = 'new';
+        db.prepare('UPDATE orders SET status = ? WHERE id = ?').run('new', orderId);
+        console.log(`[ADD-ITEMS] Order #${orderId} reset from '${order.status}' → 'new' for kitchen.`);
+      }
+
+      // Fetch the updated full order to broadcast to kitchen
+      const updatedOrder = db.prepare(`
+        SELECT o.*, t.table_number, u.name as waiter_name
+        FROM orders o
+        JOIN tables t ON o.table_id = t.id
+        JOIN users u ON o.waiter_id = u.id
+        WHERE o.id = ?
+      `).get(orderId) as any;
+
+      if (updatedOrder) {
+        updatedOrder.items = db.prepare(`
+          SELECT oi.*, m.name as item_name, m.price, m.is_veg, m.half_price
+          FROM order_items oi JOIN menu m ON oi.menu_id = m.id
+          WHERE oi.order_id = ?
+        `).all(orderId);
+
+        // If status was reset → fire new-order so kitchen panel shows it
+        if (newStatus === 'new') {
+          io.emit('new-order', updatedOrder);
+        }
+      }
+
+      io.emit('order-status-updated', { id: orderId, status: newStatus });
       io.emit('stats-update');
-      res.json({ success: true, added: items.length, extra: addedTotal });
+      res.json({ success: true, added: items.length, extra: addedTotal, newStatus });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
   });
+
 
   // Update order notes
   app.patch('/api/orders/:id/notes', authenticate, (req: any, res: any) => {
@@ -716,6 +768,55 @@ async function startServer() {
     db.prepare('UPDATE orders SET notes = ? WHERE id = ?').run(notes || '', req.params.id);
     io.emit('order-status-updated', { id: parseInt(req.params.id) });
     res.json({ success: true });
+  });
+
+  // ── Delete a single item from an order (admin) ──────────────────────────
+  app.delete('/api/admin/order-items/:itemId', authenticate, (req: any, res: any) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
+    try {
+      const itemId = parseInt(req.params.itemId);
+      // Get item details before deleting (to recalculate total)
+      const item = db.prepare(`
+        SELECT oi.*, m.price, m.half_price FROM order_items oi
+        JOIN menu m ON oi.menu_id = m.id WHERE oi.id = ?
+      `).get(itemId) as any;
+      if (!item) return res.status(404).json({ error: 'Item not found' });
+
+      const price = item.portion === 'half' ? (item.half_price || item.price / 2) : item.price;
+      const itemTotal = price * item.quantity;
+
+      // Delete item and reduce order total
+      db.prepare('DELETE FROM order_items WHERE id = ?').run(itemId);
+      db.prepare('UPDATE orders SET total_price = MAX(0, total_price - ?) WHERE id = ?').run(itemTotal, item.order_id);
+
+      io.emit('order-status-updated', { id: item.order_id });
+      io.emit('stats-update');
+      res.json({ success: true, removed: itemTotal });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Apply discount to a table's orders (admin) ─────────────────────────
+  app.put('/api/admin/orders/discount', authenticate, (req: any, res: any) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
+    try {
+      const { order_ids, discount_type, discount_value } = req.body;
+      // discount_type: 'flat' | 'percent'
+      // discount_value: number
+      if (!order_ids?.length || !discount_value) return res.status(400).json({ error: 'Missing params' });
+
+      for (const oid of order_ids) {
+        const order = db.prepare('SELECT total_price FROM orders WHERE id = ?').get(oid) as any;
+        if (!order) continue;
+        let disc = 0;
+        if (discount_type === 'percent') disc = (order.total_price * discount_value) / 100;
+        else disc = discount_value;
+        const newTotal = Math.max(0, order.total_price - disc / order_ids.length);
+        db.prepare('UPDATE orders SET total_price = ? WHERE id = ?').run(newTotal, oid);
+      }
+      io.emit('stats-update');
+      io.emit('order-status-updated', {});
+      res.json({ success: true });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
   // Reset all orders for new month (admin only)
