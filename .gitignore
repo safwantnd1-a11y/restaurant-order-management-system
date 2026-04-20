@@ -9,3 +9,6 @@ coverage/
 *.db
 release/
 server.cjs
+service-account.json
+cloudflared.exe
+*.apk

@@ -50,16 +50,17 @@ db.exec(`
 // Seed initial data if empty
 const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
 
-// Ensure any legacy restaurant.com emails are rewritten to testy.com on startup.
-db.prepare("UPDATE users SET email = REPLACE(email, '@restaurant.com', '@testy.com') WHERE email LIKE '%@restaurant.com'").run();
+// Ensure any legacy restaurant.com / testy.com emails are rewritten to @roms.com on startup.
+db.prepare("UPDATE users SET email = REPLACE(email, '@restaurant.com', '@roms.com') WHERE email LIKE '%@restaurant.com'").run();
+db.prepare("UPDATE users SET email = REPLACE(email, '@testy.com', '@roms.com') WHERE email LIKE '%@testy.com'").run();
 
 if (userCount.count === 0) {
   const bcrypt = await import('bcryptjs');
   const hashedPassword = await bcrypt.hash('password123', 10);
   
-  db.prepare('INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)').run('Admin User', 'admin@testy.com', hashedPassword, 'admin');
-  db.prepare('INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)').run('Waiter User', 'waiter@testy.com', hashedPassword, 'waiter');
-  db.prepare('INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)').run('Kitchen User', 'kitchen@testy.com', hashedPassword, 'kitchen');
+  db.prepare('INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)').run('Admin User', 'admin@roms.com', hashedPassword, 'admin');
+  db.prepare('INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)').run('Waiter User', 'waiter@roms.com', hashedPassword, 'waiter');
+  db.prepare('INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)').run('Kitchen User', 'kitchen@roms.com', hashedPassword, 'kitchen');
 
   db.prepare('INSERT INTO tables (table_number) VALUES (?)').run('Table 1');
   db.prepare('INSERT INTO tables (table_number) VALUES (?)').run('Table 2');

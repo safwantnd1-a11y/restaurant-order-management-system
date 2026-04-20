@@ -8,7 +8,7 @@ import axios from 'axios';
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [serverUrl, setServerUrl] = useState(localStorage.getItem('__roms_server_ip') || (window.location.origin.includes('localhost') ? '' : window.location.origin));
+  const [serverUrl, setServerUrl] = useState(localStorage.getItem('__roms_server_ip') || 'https://romsah.dpdns.org');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [scanning, setScanning] = useState(false);
@@ -44,7 +44,7 @@ export default function Login() {
   const autoScanNetwork = async () => {
     setScanning(true);
     setError('');
-    
+
     // Most common Indian router subnets: 1.x, 0.x, 29.x(Jio), 100.x(Airtel) 
     const subnets = ['192.168.1', '192.168.0', '192.168.29', '192.168.100', '10.0.0'];
     let foundIp = '';
@@ -170,7 +170,7 @@ export default function Login() {
                 label: 'Email or Username',
                 icon: <Users size={16} />,
                 node: (
-                  <input type="text" required className="input-dark pl-11" placeholder="admin / waiter@testy.com"
+                  <input type="text" required className="input-dark pl-11" placeholder="admin / waiter@roms.com"
                     value={email} onChange={e => setEmail(e.target.value)} id="login-email" />
                 ),
               },
@@ -204,8 +204,8 @@ export default function Login() {
                         <Wifi size={16} />
                       </div>
                     </div>
-                    <button 
-                      type="button" 
+                    <button
+                      type="button"
                       onClick={autoScanNetwork}
                       disabled={scanning}
                       className="px-4 bg-white/5 border border-white/10 rounded-xl text-white font-bold transition hover:bg-orange-500/20 hover:border-orange-500/40 disabled:opacity-50 flex items-center justify-center shrink-0"

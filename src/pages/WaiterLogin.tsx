@@ -264,7 +264,7 @@ export default function WaiterLogin() {
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-widest mb-2"
                       style={{ color: 'rgba(255,255,255,0.3)' }}>Email or Username</label>
-                    <input type="text" required placeholder="waiter@testy.com"
+                    <input type="text" required placeholder="waiter@roms.com"
                       value={email} onChange={e => setEmail(e.target.value)}
                       className="w-full bg-transparent outline-none text-sm px-4 py-3.5 rounded-2xl"
                       style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', color: 'white' }} />

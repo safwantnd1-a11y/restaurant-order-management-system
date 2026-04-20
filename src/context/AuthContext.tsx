@@ -21,6 +21,20 @@ axios.interceptors.request.use((config) => {
   return config;
 }, (error) => Promise.reject(error));
 
+// ✅ Global Response Interceptor for 401 Unauthorized
+axios.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response && error.response.status === 401 && error.config?.url !== '/api/auth/logout') {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      delete axios.defaults.headers.common['Authorization'];
+      window.dispatchEvent(new Event('auth-logout'));
+    }
+    return Promise.reject(error);
+  }
+);
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<any>(() => {
     try {
@@ -39,6 +53,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       delete axios.defaults.headers.common['Authorization'];
     }
   }, [token]);
+
+  // Listen to global auth-logout events dispatched from HTTP interceptors
+  useEffect(() => {
+    const handleLogoutEvent = () => {
+      setToken(null);
+      setUser(null);
+    };
+
+    window.addEventListener('auth-logout', handleLogoutEvent);
+    return () => window.removeEventListener('auth-logout', handleLogoutEvent);
+  }, []);
 
   const login = async (email: string, password: string) => {
     const response = await axios.post('/api/auth/login', { email, password });

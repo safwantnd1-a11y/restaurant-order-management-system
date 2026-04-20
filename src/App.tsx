@@ -8,9 +8,9 @@ import KitchenDashboard from './pages/kitchen/Dashboard';
 import AdminDashboard from './pages/admin/Dashboard';
 import QRMenu from './pages/customer/QRMenu';
 
-// ── Detect if this is a Waiter-only APK build ───────────────────────────────
-// Set VITE_APP_MODE=waiter in .env.waiter when building the APK
-const IS_WAITER_APP = import.meta.env.VITE_APP_MODE === 'waiter';
+// ── Detect if running inside a Capacitor (Android APK) build ────────────────
+// Capacitor injects window.Capacitor when running as a native app
+const IS_WAITER_APP = !!(window as any).Capacitor || import.meta.env.VITE_APP_MODE === 'waiter';
 
 interface EBProps { children: React.ReactNode; }
 interface EBState { hasError: boolean; }
@@ -38,10 +38,15 @@ class ErrorBoundary extends React.Component<EBProps, EBState> {
 // ── Protected route ──────────────────────────────────────────────────────────
 const ProtectedRoute = ({ children, roles }: { children: React.ReactNode, roles?: string[] }) => {
   const { user } = useAuth();
-  const loginPath = IS_WAITER_APP ? '/waiter-login' : '/login';
+  const loginPath = '/login';  // Both APK and web use /login
   if (!user) return <Navigate to={loginPath} />;
-  // In waiter-app mode: hard block any non-waiter role
-  if (IS_WAITER_APP && user.role !== 'waiter') return <Navigate to="/waiter-login" />;
+  // In waiter-app mode: hard block any non-waiter role immediately
+  if (IS_WAITER_APP && user.role !== 'waiter') {
+    // Clear stale session and redirect
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    return <Navigate to="/login" />;
+  }
   if (roles && !roles.includes(user.role)) return <Navigate to="/" />;
   return <ErrorBoundary>{children}</ErrorBoundary>;
 };
@@ -66,11 +71,11 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           {IS_WAITER_APP ? (
-            // ── Waiter-only APK mode ───────────────────────────────────────
+            // ── Waiter-only APK mode (Capacitor Android) ──────────────────
             <>
-              <Route path="/waiter-login" element={<WaiterLogin />} />
+              <Route path="/login" element={<Login />} />
               <Route path="/" element={<ProtectedRoute><RoleBasedHome /></ProtectedRoute>} />
-              <Route path="*" element={<Navigate to="/waiter-login" />} />
+              <Route path="*" element={<Navigate to="/login" />} />
             </>
           ) : (
             // ── Full Web App mode (Admin + Kitchen + Waiter) ───────────────

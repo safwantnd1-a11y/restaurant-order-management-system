@@ -88,8 +88,9 @@ if (!userColumns.includes('last_login')) db.prepare('ALTER TABLE users ADD COLUM
 if (!userColumns.includes('active')) db.prepare('ALTER TABLE users ADD COLUMN active INTEGER DEFAULT 0').run();
 if (!userColumns.includes('left_company')) db.prepare('ALTER TABLE users ADD COLUMN left_company INTEGER DEFAULT 0').run();
 
-// Normalize any legacy restaurant.com staff emails to @testy.com
-db.prepare("UPDATE users SET email = REPLACE(email, '@restaurant.com', '@testy.com') WHERE email LIKE '%@restaurant.com'").run();
+// Normalize any legacy restaurant.com / testy.com staff emails to @roms.com
+db.prepare("UPDATE users SET email = REPLACE(email, '@restaurant.com', '@roms.com') WHERE email LIKE '%@restaurant.com'").run();
+db.prepare("UPDATE users SET email = REPLACE(email, '@testy.com', '@roms.com') WHERE email LIKE '%@testy.com'").run();
 
 // Create staff_tables table
 db.exec(`
@@ -120,6 +121,7 @@ db.exec(`
 const ordersColumns = db.prepare('PRAGMA table_info(orders)').all().map((col: any) => col.name);
 if (!ordersColumns.includes('customer_id')) db.prepare('ALTER TABLE orders ADD COLUMN customer_id INTEGER DEFAULT NULL').run();
 if (!ordersColumns.includes('payment_method')) db.prepare("ALTER TABLE orders ADD COLUMN payment_method TEXT DEFAULT 'cash'").run();
+if (!ordersColumns.includes('discount')) db.prepare("ALTER TABLE orders ADD COLUMN discount REAL DEFAULT 0").run();
 
 // ── Migration: remove restrictive CHECK constraint on orders.status ──────────
 // The original table had CHECK(status IN ('new','preparing','ready','served'))
@@ -170,8 +172,8 @@ const adminPassword = bcrypt.hashSync('admin', salt);
 const defaultPassword = bcrypt.hashSync('password123', salt);
 const defaultUsers = [
   { name: 'Admin User', email: 'admin', role: 'admin', password: adminPassword },
-  { name: 'Waiter User', email: 'waiter@testy.com', role: 'waiter', password: defaultPassword },
-  { name: 'Kitchen User', email: 'kitchen@testy.com', role: 'kitchen', password: defaultPassword },
+  { name: 'Waiter User', email: 'waiter@roms.com', role: 'waiter', password: defaultPassword },
+  { name: 'Kitchen User', email: 'kitchen@roms.com', role: 'kitchen', password: defaultPassword },
 ];
 
 if (userCount.count === 0) {
@@ -257,14 +259,14 @@ async function startServer() {
 
   const makeEmailFromName = (name: string, role: string) => {
     const slug = name.trim().toLowerCase().replace(/\s+/g, '.').replace(/[^a-z0-9.]/g, '');
-    return `${slug || role}@testy.com`;
+    return `${slug || role}@roms.com`;
   };
 
   const ensureUniqueEmail = (email: string) => {
     let candidate = email;
     let suffix = 1;
     while (db.prepare('SELECT 1 FROM users WHERE email = ?').get(candidate)) {
-      candidate = `${email.replace(/@.*$/, '')}${suffix}@testy.com`;
+      candidate = `${email.replace(/@.*$/, '')}${suffix}@roms.com`;
       suffix += 1;
     }
     return candidate;
@@ -290,13 +292,13 @@ async function startServer() {
     // Security Fix: only check email or name, NOT role
     let user = db.prepare('SELECT * FROM users WHERE email = ? OR name = ?').get(identifier, identifier) as any;
 
-    if (!user && identifier.toLowerCase().includes('@testy.com')) {
-      const legacyIdentifier = identifier.replace(/@testy\.com$/i, '@restaurant.com');
+    if (!user && (identifier.toLowerCase().includes('@testy.com') || identifier.toLowerCase().includes('@roms.com'))) {
+      const legacyIdentifier = identifier.replace(/@testy\.com$/i, '@restaurant.com').replace(/@roms\.com$/i, '@restaurant.com');
       user = db.prepare('SELECT * FROM users WHERE email = ? OR name = ?').get(legacyIdentifier, legacyIdentifier) as any;
     }
 
     if (!user && identifier.toLowerCase().includes('@restaurant.com')) {
-      const modernIdentifier = identifier.replace(/@restaurant\.com$/i, '@testy.com');
+      const modernIdentifier = identifier.replace(/@restaurant\.com$/i, '@roms.com');
       user = db.prepare('SELECT * FROM users WHERE email = ? OR name = ?').get(modernIdentifier, modernIdentifier) as any;
     }
 
@@ -304,8 +306,8 @@ async function startServer() {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    if (user.email.toLowerCase().endsWith('@restaurant.com')) {
-      const updatedEmail = user.email.replace(/@restaurant\.com$/i, '@testy.com');
+    if (user.email.toLowerCase().endsWith('@restaurant.com') || user.email.toLowerCase().endsWith('@testy.com')) {
+      const updatedEmail = user.email.replace(/@restaurant\.com$/i, '@roms.com').replace(/@testy\.com$/i, '@roms.com');
       db.prepare('UPDATE users SET email = ? WHERE id = ?').run(updatedEmail, user.id);
       user.email = updatedEmail;
     }
@@ -416,7 +418,7 @@ async function startServer() {
       SELECT
         u.id,
         u.name,
-        REPLACE(u.email, '@restaurant.com', '@testy.com') AS email,
+        REPLACE(REPLACE(u.email, '@restaurant.com', '@roms.com'), '@testy.com', '@roms.com') AS email,
         u.role,
         u.active,
         COALESCE(u.login_count, 0) as login_count,
@@ -573,7 +575,7 @@ async function startServer() {
       // Admin sees ALL orders except cancelled normally? No, admin sees all, maybe filter later if needed.
     } else if (req.user.role === 'waiter') {
       if (req.query.history === 'true') {
-        query += ` WHERE o.waiter_id = ? AND o.status IN ('paid')`;
+        query += ` WHERE o.waiter_id = ? AND o.status IN ('paid', 'cancelled')`;
         params.push(req.user.id);
       } else {
         // Keep served + billing visible so waiter can request billing & see progress
@@ -1141,32 +1143,36 @@ async function startServer() {
       SELECT m.name, SUM(oi.quantity) as quantity_sold, SUM(m.price * oi.quantity) as revenue
       FROM order_items oi JOIN menu m ON oi.menu_id = m.id
       JOIN orders o ON oi.order_id = o.id
+      WHERE o.status = 'paid'
       GROUP BY m.id ORDER BY quantity_sold DESC LIMIT 8
     `).all();
 
     const revenueByDay = db.prepare(`
-      SELECT DATE(created_at) as date, SUM(total_price) as revenue, COUNT(*) as orders
+      SELECT DATE(COALESCE(paid_at, created_at)) as date, SUM(total_price) as revenue, COUNT(*) as orders
       FROM orders
-      WHERE created_at >= DATE('now', '-7 days')
-      GROUP BY DATE(created_at) ORDER BY date ASC
+      WHERE status = 'paid' AND DATE(COALESCE(paid_at, created_at)) >= DATE('now', '-7 days')
+      GROUP BY DATE(COALESCE(paid_at, created_at)) ORDER BY date ASC
     `).all();
 
     const peakHours = db.prepare(`
       SELECT CAST(strftime('%H', created_at) AS INTEGER) as hour, COUNT(*) as order_count
       FROM orders
+      WHERE status != 'cancelled'
       GROUP BY hour ORDER BY hour ASC
     `).all();
 
     const categoryBreakdown = db.prepare(`
       SELECT m.category, SUM(m.price * oi.quantity) as revenue, SUM(oi.quantity) as qty
       FROM order_items oi JOIN menu m ON oi.menu_id = m.id
+      JOIN orders o ON oi.order_id = o.id
+      WHERE o.status = 'paid'
       GROUP BY m.category ORDER BY revenue DESC
     `).all();
 
     const totalCustomers = (db.prepare('SELECT COUNT(*) as c FROM customers').get() as any).c;
     const repeatCustomers = (db.prepare('SELECT COUNT(*) as c FROM customers WHERE visits > 1').get() as any).c;
-    const totalRevenue = (db.prepare('SELECT SUM(total_price) as t FROM orders').get() as any).t || 0;
-    const totalOrders = (db.prepare('SELECT COUNT(*) as c FROM orders').get() as any).c;
+    const totalRevenue = (db.prepare("SELECT SUM(total_price) as t FROM orders WHERE status = 'paid'").get() as any).t || 0;
+    const totalOrders = (db.prepare("SELECT COUNT(*) as c FROM orders WHERE status != 'cancelled'").get() as any).c;
 
     res.json({ topItems, revenueByDay, peakHours, categoryBreakdown, totalCustomers, repeatCustomers, totalRevenue, totalOrders });
   });
@@ -1197,10 +1203,10 @@ async function startServer() {
   app.get('/api/admin/stats', authenticate, (req: any, res: any) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
 
-    const totalOrders = db.prepare('SELECT COUNT(*) as count FROM orders').get() as any;
-    const activeOrders = db.prepare("SELECT COUNT(*) as count FROM orders WHERE status NOT IN ('served', 'paid')").get() as any;
-    const completedOrders = db.prepare("SELECT COUNT(*) as count FROM orders WHERE status IN ('served', 'paid')").get() as any;
-    const revenue = db.prepare('SELECT SUM(total_price) as total FROM orders').get() as any;
+    const totalOrders = db.prepare("SELECT COUNT(*) as count FROM orders WHERE status != 'cancelled'").get() as any;
+    const activeOrders = db.prepare("SELECT COUNT(*) as count FROM orders WHERE status NOT IN ('served', 'billing', 'paid', 'cancelled')").get() as any;
+    const completedOrders = db.prepare("SELECT COUNT(*) as count FROM orders WHERE status IN ('served', 'billing', 'paid')").get() as any;
+    const revenue = db.prepare("SELECT SUM(total_price) as total FROM orders WHERE status = 'paid'").get() as any;
     const activeStaff = db.prepare("SELECT COUNT(*) as count FROM users WHERE role IN ('waiter', 'kitchen') AND active = 1 AND left_company = 0").get() as any;
     const totalStaff = db.prepare("SELECT COUNT(*) as count FROM users WHERE role IN ('waiter', 'kitchen') AND left_company = 0").get() as any;
 
@@ -1214,15 +1220,50 @@ async function startServer() {
     });
   });
 
+  // Reset all users to offline when server starts to prevent ghost sessions from previous ungraceful shutdowns
+  db.prepare('UPDATE users SET active = 0').run();
+  
+  // Track socket connections for real-time online status tracking
+  const userSockets = new Map<number, Set<string>>(); // userId -> Set of socket.ids
+  const socketUserMap = new Map<string, number>(); // socket.id -> userId
+
   // Socket.IO
   io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
+    
+    socket.on('register', (userId) => {
+      const id = Number(userId);
+      socketUserMap.set(socket.id, id);
+      
+      if (!userSockets.has(id)) {
+        userSockets.set(id, new Set());
+      }
+      userSockets.get(id)?.add(socket.id);
+      
+      db.prepare('UPDATE users SET active = 1 WHERE id = ?').run(id);
+      io.emit('staff-status-updated');
+    });
+
     socket.on('join-room', (role) => {
       socket.join(role);
       console.log(`Socket ${socket.id} joined room: ${role}`);
     });
+    
     socket.on('disconnect', () => {
-      console.log('User disconnected');
+      console.log('User disconnected:', socket.id);
+      const userId = socketUserMap.get(socket.id);
+      if (userId) {
+        socketUserMap.delete(socket.id);
+        const sockets = userSockets.get(userId);
+        if (sockets) {
+          sockets.delete(socket.id);
+          if (sockets.size === 0) {
+            userSockets.delete(userId);
+            db.prepare('UPDATE users SET active = 0 WHERE id = ?').run(userId);
+            io.emit('staff-status-updated');
+          }
+        }
+      }
     });
   });
 

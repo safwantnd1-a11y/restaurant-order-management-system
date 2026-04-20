@@ -17,6 +17,7 @@ export const useSocket = () => {
     newSocket.on('connect', () => {
       setConnected(true);
       newSocket.emit('join-room', user.role);
+      newSocket.emit('register', user.id);
     });
 
     newSocket.on('disconnect', () => {
